@@ -15,10 +15,10 @@ This project aims to create a comprehensive data-driven map that grades French c
 
 The project integrates multiple datasets to evaluate cities across different dimensions:
 
-- **Weather Data**: Temperature, precipitation, sunshine hours, and seasonal patterns
-- **Environmental Data**: Air quality indices, pollution levels (PM2.5, PM10, NO2, O3)
+- **Weather Data**: Temperature, precipitation, sunshine hours, and seasonal patterns (https://openweathermap.org/api)
+- **Environmental Data**: Air quality indices, pollution levels (PM2.5, PM10, NO2, O3) (https://openweathermap.org/api/air-pollution#fields)
 - **Economic Indicators**: 
-  - Real estate prices (price per square meter)
+  - Real estate prices (price per square meter) (https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees/)
   - Average household salaries
   - Job market data (number of job offers by sector)
 - **Cultural & Sports Events**: Major sporting events, concerts, festivals

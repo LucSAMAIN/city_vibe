@@ -15,36 +15,68 @@ This project aims to create a comprehensive data-driven map that grades French c
 
 The project integrates multiple datasets to evaluate cities across different dimensions:
 
-- **Weather Data**: Temperature, precipitation, sunshine hours, and seasonal patterns (https://openweathermap.org/api)
-- **Environmental Data**: Air quality indices, pollution levels (PM2.5, PM10, NO2, O3) (https://openweathermap.org/api/air-pollution#fields)
-- **Economic Indicators**: 
-  - Real estate prices (price per square meter) (https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees/)
-  - Average household salaries
-  - Job market data (number of job offers by sector)
-- **Cultural & Sports Events**: Major sporting events, concerts, festivals
+- **Price per squared meter**: Demandes de valeurs foncières géolocalisées (https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees/)
 - **Geographic Data**: City coordinates
+- **Individual Revenue Index**: Revenus, pauvreté et niveau de vie - Données carroyées (https://www.data.gouv.fr/datasets/revenus-pauvrete-et-niveau-de-vie-donnees-carroyees/)
 
 
 ## Queries 
 The project addresses the following analytical questions:
 
-1. **What are the best cities to live in France based on weather?**
-   - Ranking cities by sunshine hours, mild temperatures, low precipitation, etc.
+1. **What is the relation between revenue and housing prices?**
+   - Show places where housing is too expensive compared to revenue, show richest/poorest places, etc.
 
-2. **What is the best starting job location?**
-   - Analysis combining job availability, salary levels, and cost of living (rent/purchase prices)
+2. **What is the relation between revenue and built/land surface?**
+   - Do higher revenue people prioritize built or land surface, do lower revenue people care about land surface
 
 3. **What are the worst cities for quality of life?**
    - Identification of cities with poor air quality, unfavorable weather, or high cost-to-salary ratios
 
-4. **Which cities offer the best work-life balance?**
-   - Combining economic opportunities with environmental quality and cultural activities
+## Schema
 
-5. **What are the seasonal variations in city vibes?**
-   - Temporal analysis of how city rankings change throughout the year
-
-6. **What are the most affordable cities with good quality of life?**
-   - Finding cities with optimal price-to-quality ratios
+```mermaid
+erDiagram
+    TRANSACTION_FACT ||--o{ DIM_LOCATION : city
+    TRANSACTION_FACT ||--o{ DIM_DATE : date
+    TRANSACTION_FACT ||--o{ DIM_REVENUE : "revenue zone"
+    TRANSACTION_FACT {
+      string id_transaction
+      string  date_id
+      string  location_id
+      string  property_id
+      string  revenue_id
+      float transaction_value
+      float land_surface
+      float built_surface
+      float price_m2
+    }
+    DIM_LOCATION {
+      string location_id
+      string insee_code
+      string city_name
+      int postal_code
+      int department_num
+      string region_id
+      float lat
+      float long
+    }
+    DIM_DATE {
+      string date_id
+      timestamp full_date
+      timestamp year
+      timestamp month
+      string month_name
+      string quarter
+    }
+   DIM_REVENUE {
+      string revenue_zone_id
+      int household_num
+      float standardized_income_sum
+      int population_num
+      float median_revenue
+      timestamp year
+    }
+```
 
 ## Requirements
 

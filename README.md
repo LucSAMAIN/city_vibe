@@ -29,8 +29,8 @@ The project addresses the following analytical questions:
 2. **What is the relation between revenue and built/land surface?**
    - Do higher revenue people prioritize built or land surface, do lower revenue people care about land surface
 
-3. **What are the worst cities for quality of life?**
-   - Identification of cities with poor air quality, unfavorable weather, or high cost-to-salary ratios
+3. **Does environnemental diagnostic affect housing price?**
+   - Is housing more expensive when the environnemental diagnostic is good/bad, etc.
 
 ## Schema
 
@@ -39,6 +39,7 @@ erDiagram
     TRANSACTION_FACT ||--o{ DIM_LOCATION : city
     TRANSACTION_FACT ||--o{ DIM_DATE : date
     TRANSACTION_FACT ||--o{ DIM_REVENUE : "revenue zone"
+    TRANSACTION_FACT ||--o{ DIM_DIAGNOSTIC : "environnemental diagnostic"
     TRANSACTION_FACT {
       string id_transaction
       string  date_id
@@ -75,6 +76,11 @@ erDiagram
       int population_num
       float median_revenue
       timestamp year
+    }
+   DIM_DIAGNOSTIC {
+      string diagnostic_id
+      string ghg
+      string energy_consumption
     }
 ```
 

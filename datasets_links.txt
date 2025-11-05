@@ -22,3 +22,6 @@ https://www.data.gouv.fr/datasets/contours-administratifs/
 
 carte:
 https://statistiques-locales.insee.fr/#c=indicator&view=map2
+
+Diagnostique performance énergétique:
+https://data.ademe.fr/datasets/dpe-france

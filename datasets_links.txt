@@ -25,3 +25,9 @@ https://statistiques-locales.insee.fr/#c=indicator&view=map2
 
 Diagnostique performance énergétique:
 https://data.ademe.fr/datasets/dpe-france
+
+Demandes de valeurs foncières:
+https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees/reuses_and_dataservices
+
+Recettes fiscales:
+https://www.data.gouv.fr/datasets/limpot-sur-le-revenu-par-collectivite-territoriale-ircom/

@@ -1,9 +1,6 @@
 .env
 .venv
-datasets/*
-documentation_datasets/*
 logs/*
-tmp
-airflow/
 .github/
-dag/__pycache__/
+data
+dags/__pycache__/*

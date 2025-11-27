@@ -36,30 +36,29 @@ The project addresses the following analytical questions:
 
 ```mermaid
 erDiagram
-    TRANSACTION_FACT ||--o{ DIM_LOCATION : city
+    TRANSACTION_FACT ||--o{ DIM_INFO_COMMUNE : "city info"
     TRANSACTION_FACT ||--o{ DIM_DATE : date
-    TRANSACTION_FACT ||--o{ DIM_REVENUE : "revenue zone"
-    TRANSACTION_FACT ||--o{ DIM_DIAGNOSTIC : "environnemental diagnostic"
+    TRANSACTION_FACT ||--o{ DIM_BUILDING : "building information"
     TRANSACTION_FACT {
       string id_transaction
       string  date_id
-      string  location_id
-      string  property_id
-      string  revenue_id
+      string  commune_id
+      string  building_id
       float transaction_value
       float land_surface
       float built_surface
       float price_m2
     }
-    DIM_LOCATION {
-      string location_id
+    DIM_INFO_COMMUNE {
+      string commune_id
       string insee_code
       string city_name
       int postal_code
       int department_num
       string region_id
-      float lat
-      float long
+      float reference_tax_revenue_sum
+      float tax_household_number
+      float reference_tax_revenue
     }
     DIM_DATE {
       string date_id
@@ -69,18 +68,15 @@ erDiagram
       string month_name
       string quarter
     }
-   DIM_REVENUE {
-      string revenue_zone_id
-      int household_num
-      float standardized_income_sum
-      int population_num
-      float median_revenue
-      timestamp year
-    }
-   DIM_DIAGNOSTIC {
-      string diagnostic_id
+   DIM_BUILDING {
+      string building_id
+      string dpe_id
+      string type
       string ghg
       string energy_consumption
+      float lat
+      float long
+      string proj
     }
 ```
 
@@ -95,4 +91,8 @@ erDiagram
 * Ensure code reproducibility and instructions on how to replicate the results;
 * Add an open-source license, e.g., Apache 2.0;
 * README is automatically converted into pdf
+
+## Future work
+
+- Add precise localisation to fact table
 

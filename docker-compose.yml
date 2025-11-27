@@ -110,6 +110,28 @@ services:
     networks:
       - Practice
 
+  postgres-instance:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER} # for the psql client
+      PGPASSWORD: ${POSTGRES_PASSWORD} # for the psql client
+      PGDATABASE: ${POSTGRES_DB} # for the psql client
+    ports:
+      - "5431:5432"
+    volumes:
+      - postgres-instance-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - Practice
+
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
     # https://redis.io/blog/redis-adopts-dual-source-available-licensing/
@@ -426,6 +448,7 @@ networks:
 
 volumes:
   postgres-db-volume:
+  postgres-instance-db-volume:
   MONGO_DATA:
     name: MONGO_DATA
   MONGO_CONFIG:

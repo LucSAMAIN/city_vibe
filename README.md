@@ -20,6 +20,8 @@ The project integrates multiple datasets to evaluate cities across different dim
 - **Individual Revenue Index**: Revenus, pauvreté et niveau de vie - Données carroyées (https://www.data.gouv.fr/datasets/revenus-pauvrete-et-niveau-de-vie-donnees-carroyees/)
 
 
+
+
 ## Queries 
 The project addresses the following analytical questions:
 

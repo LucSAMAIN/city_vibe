@@ -14,76 +14,125 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-def compute_checksum(path):
-    import hashlib
-    sha = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
+def clean_column(name):
+    import re
+    import unicodedata
 
-def _extract_revenue_to_mongo():
+    # Remove accents
+    name = ''.join(
+        c for c in unicodedata.normalize('NFD', name)
+        if unicodedata.category(c) != 'Mn'
+    )
+    # Replace non-alphanumeric by underscore
+    name = re.sub(r'[^a-zA-Z0-9]+', '_', name)
+    # Remove leading/trailing underscores
+    name = name.strip('_')
+    # Lowercase
+    return name.lower()
+
+def clean_value(v):
+    # Convert Mongo ObjectId or any object → string
+    if not isinstance(v, (int, float, str)) and v is not None:
+        v = str(v)
+
+    # NULL handling
+    if v is None:
+        return "NULL"
+
+    # Numeric values → keep raw
+    if isinstance(v, (int, float)):
+        return str(v)
+
+    # Strings → escape single quotes
+    if isinstance(v, str):
+        v = v.replace("'", "''")
+        return f"'{v}'"
+
+    # Fallback
+    return f"'{str(v)}'"
+
+def _mongo_to_postgres():
+    import psycopg2
     from pymongo import MongoClient
     import pandas as pd
-    import os
-    import redis
+    import io
 
-    # Connect to Redis
-    redis_client = redis.Redis(
-        host="redis-instance",
-        port=6379,
-        db=0
-    )
-
+    # Connect to Mongo
     client = MongoClient(
-        "mongodb://mongo:27017/",  
-        username='admin',
-        password='admin'
+        "mongodb://mongo:27017/",
+        username="admin",
+        password="admin"
     )
 
-    for year in range(2019, 2024):
-        usecols = (range(0, 9), range(9, 13)) if year > 2021 else (range(1, 10), range(10, 14))
-        if year < 2020:
-            skip = 3
-        elif year < 2022:
-            skip = 6
-        else:
-            skip = 5
+    # Connect to PostgreSQL
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
 
-        if year == 2019 or year == 2022:
-            skipfooter = 2
-        elif year == 2020:
-            skipfooter = 4
-        elif year == 2021 and year == 2023:
-            skipfooter = 0
-        else:
-            skipfooter = 6
+    collections = client.extracted.list_collection_names()
 
-        file_path = f"/opt/airflow/data/revenue/revenue_{year}.xlsx"
-        checksum = compute_checksum(file_path)
-        key = f"file_status:{file_path}"
+    for collection in collections:
+        print(f"Processing collection: {collection}")
 
-        previous = redis_client.get(key)
-        previous = previous.decode() if previous else None
+        # Stream documents to avoid OOM
+        cursor = client.extracted[collection].find(batch_size=2000)
 
-        if previous == checksum:
-            print(f"File unchanged: {file_path} → skipping...")
+        # Read first batch to determine schema
+        first_batch = list(cursor.limit(2000))
+
+        if not first_batch:
             continue
 
-        # File is new or changed, update Redis
-        redis_client.set(key, checksum)
-        print(f"File changed: {file_path} → processing...")
+        df = pd.DataFrame(first_batch)
 
-        revenue_first_part = pd.read_excel(file_path, header=0, usecols=usecols[0], skiprows=skip, skipfooter=skipfooter)[1:].reset_index(drop=True)
-        revenue_second_part = pd.read_excel(file_path, header=1, usecols=usecols[1], skiprows=skip, skipfooter=skipfooter)
-        revenue = pd.concat([revenue_first_part, revenue_second_part], axis=1)
-        
-        collection_name = f"revenue_{year}"
-        client["extracted"][collection_name].delete_many({})
-        client["extracted"][collection_name].insert_many(
-            revenue.to_dict(orient="records"),
-        )
-        logger.info(f"Inserted data from revenue_{year}.xlsx into MongoDB collection {collection_name}")
+        # Drop MongoDB ID column
+        if "_id" in df.columns:
+            df = df.drop(columns=["_id"])
+
+        clean_cols = [clean_column(col) for col in df.columns]
+
+        # Create SQL table
+        create_cols_sql = ", ".join([f'"{c}" TEXT' for c in clean_cols])
+        cur.execute(f'CREATE TABLE IF NOT EXISTS "{collection}" ({create_cols_sql});')
+
+        # Prepare column list for COPY
+        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols])
+
+        # COPY buffer reusable object
+        def copy_rows(row_batch):
+            csv_buffer = io.StringIO()
+            for row in row_batch:
+                cleaned_row = [clean_value(row.get(orig_col)) for orig_col in df.columns]
+                csv_buffer.write(",".join(cleaned_row) + "\n")
+
+            csv_buffer.seek(0)
+
+            cur.copy_expert(
+                f'COPY "{collection}" ({col_list_sql}) FROM STDIN WITH CSV',
+                csv_buffer
+            )
+            conn.commit()
+
+        # Send first batch
+        copy_rows(first_batch)
+
+        # Stream remaining batches
+        batch = []
+        for doc in cursor:
+            batch.append(doc)
+
+            if len(batch) >= 2000:
+                copy_rows(batch)
+                batch = []
+
+        # Last incomplete batch
+        if batch:
+            copy_rows(batch)
 
 with DAG(
     dag_id="staging_dag",
@@ -100,9 +149,9 @@ with DAG(
         dag=dag,
     )
 
-    extracting_revenue = PythonOperator(
-        task_id="extracting_revenue",
-        python_callable=_extract_revenue_to_mongo,
+    mongo_to_postgres = PythonOperator(
+        task_id="mongo_to_postgres",
+        python_callable=_mongo_to_postgres,
         dag=dag,
     )
 
@@ -113,4 +162,4 @@ with DAG(
     )
 
 
-    start >> extracting_revenue >> end
+    start >> mongo_to_postgres >> end

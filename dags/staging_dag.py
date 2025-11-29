@@ -6,6 +6,8 @@ from airflow.providers.standard.operators.python import PythonOperator
 
 import logging
 
+## Configuration
+
 logger = logging.getLogger(__name__)
 
 default_args = {
@@ -13,6 +15,8 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
+
+## Helper functions for data cleaning and transfer
 
 def clean_column(name):
     import re
@@ -50,6 +54,8 @@ def clean_value(v):
 
     # Fallback
     return f"'{str(v)}'"
+
+## Task functions
 
 def _mongo_to_postgres():
     import psycopg2
@@ -134,9 +140,11 @@ def _mongo_to_postgres():
         if batch:
             copy_rows(batch)
 
+## Staging DAG definition
+
 with DAG(
     dag_id="staging_dag",
-    description="Schéma global des pipelines City Vibe (ingestion -> dimensions -> faits -> qualité -> mart)",
+    description="Staging data pipeline. Moves raw data from MongoDB to staging Postgres.",
     start_date=datetime(2024, 1, 1),
     schedule="@monthly",
     catchup=False,

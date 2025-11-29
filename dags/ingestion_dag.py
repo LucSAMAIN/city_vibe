@@ -7,7 +7,16 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 import logging
 
+## Configuration
+
 logger = logging.getLogger(__name__)
+default_args = {
+    "owner": "city_vibe",
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+## Constant definitions
 
 REVENUE_URLS = [
     (2023, "https://www.data.gouv.fr/api/1/datasets/r/65c61c89-ab5d-42dc-ac5b-03194f9d2efc"),
@@ -17,11 +26,17 @@ REVENUE_URLS = [
     (2019, "https://www.data.gouv.fr/api/1/datasets/r/cc0d8dc0-6b13-4a86-bcf7-32418bf7b787")
 ]
 
-default_args = {
-    "owner": "city_vibe",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
-}
+## Helper functions
+
+def compute_checksum(path):
+    import hashlib
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+## Task functions
 
 def _download_revenue():
     logger.info("Downloading revenue datasets...")
@@ -56,14 +71,6 @@ def _extract_revenue():
                         with open(f"/opt/airflow/data/revenue/{name}", 'wb') as f:
                             f.write(z.read(member))
             logger.info(f"Extracted {zip_file}")
-
-def compute_checksum(path):
-    import hashlib
-    sha = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
 
 def _extract_revenue_to_mongo():
     from pymongo import MongoClient
@@ -128,9 +135,11 @@ def _extract_revenue_to_mongo():
         )
         logger.info(f"Inserted data from revenue_{year}.xlsx into MongoDB collection {collection_name}")
 
+## Ingestion DAG definition
+
 with DAG(
     dag_id="ingestion_dag",
-    description="Schéma global des pipelines City Vibe (ingestion -> dimensions -> faits -> qualité -> mart)",
+    description="Ingestion data pipeline. Downloads data from data sources and inserts it into MongoDB.",
     start_date=datetime(2024, 1, 1),
     schedule="@monthly",
     catchup=False,

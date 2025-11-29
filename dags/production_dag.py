@@ -7,6 +7,8 @@ from airflow.providers.standard.operators.python import PythonOperator
 
 import logging
 
+## Configuration
+
 logger = logging.getLogger(__name__)
 
 default_args = {
@@ -15,9 +17,11 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
+## Production DAG definition
+
 with DAG(
     dag_id="production_dag",
-    description="Schéma global des pipelines City Vibe (ingestion -> dimensions -> faits -> qualité -> mart)",
+    description="Staging to production data pipeline. Moves cleaned data from staging postgres to production postgres and computes metrics.",
     start_date=datetime(2024, 1, 1),
     schedule="@monthly",
     catchup=False,

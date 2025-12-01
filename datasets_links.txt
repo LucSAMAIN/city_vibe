@@ -31,12 +31,3 @@ https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees/re
 
 Recettes fiscales:
 https://www.data.gouv.fr/datasets/limpot-sur-le-revenu-par-collectivite-territoriale-ircom/
-
-
-
-IMPORTANTES :
-Creation entreprises 2012-2024 agregees partiellement:
-https://www.insee.fr/fr/statistiques/8557644
-
-DVF:
-https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres/

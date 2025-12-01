@@ -26,6 +26,8 @@ REVENUE_URLS = [
     (2019, "https://www.data.gouv.fr/api/1/datasets/r/cc0d8dc0-6b13-4a86-bcf7-32418bf7b787")
 ]
 
+DVF_URLS = "https://www.data.gouv.fr/api/1/datasets/r/d7933994-2c66-4131-a4da-cf7cd18040a4"
+
 ## Helper functions
 
 def compute_checksum(path):

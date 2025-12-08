@@ -86,6 +86,8 @@ x-airflow-common:
       condition: service_healthy
     postgres:
       condition: service_healthy
+    mongo:
+      condition: service_healthy
 
 services:
   postgres:
@@ -393,6 +395,7 @@ services:
   mongo:
     image: mongo:latest
     container_name: mongo
+    command: ["mongod", "--wiredTigerCacheSizeGB", "1", "--bind_ip_all"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
@@ -408,6 +411,12 @@ services:
       - type: volume
         source: MONGO_CONFIG
         target: /data/configdb
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh -u $${MONGO_INITDB_ROOT_USERNAME} -p $${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase admin localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   client:
     image: mongo-express:latest

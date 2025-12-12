@@ -16,6 +16,18 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
+## Constant definitions
+COLUMN_TYPE_MAPPING = {
+    "dep": "TEXT",
+    "commune": "TEXT",
+    "libelle_de_la_commune": "TEXT",
+    "nombre_de_foyers_fiscaux": "INTEGER",
+    "revenu_fiscal_de_reference_des_foyers_fiscaux": "FLOAT",
+    "impot_net_total": "FLOAT",
+    "nombre_de_foyers_fiscaux_imposes": "INTEGER",
+    "revenu_fiscal_de_reference_des_foyers_fiscaux_imposes": "FLOAT",
+}
+
 ## Helper functions for data cleaning and transfer
 
 def clean_column(name):
@@ -79,11 +91,12 @@ def _mongo_to_postgres():
         password="airflow"
     )
     cur = conn.cursor()
+    cur.execute(f'DROP TABLE IF EXISTS REVENUE;')
 
     collections = client.extracted.list_collection_names()
 
     for collection in collections:
-        print(f"Processing collection: {collection}")
+        logger.info(f"Processing collection: {collection}")
 
         # Stream documents to avoid OOM
         cursor = client.extracted[collection].find(batch_size=2000)
@@ -101,13 +114,14 @@ def _mongo_to_postgres():
             df = df.drop(columns=["_id"])
 
         clean_cols = [clean_column(col) for col in df.columns]
+        df.columns = clean_cols
 
         # Create SQL table
-        create_cols_sql = ", ".join([f'"{c}" TEXT' for c in clean_cols])
-        cur.execute(f'CREATE TABLE IF NOT EXISTS "{collection}" ({create_cols_sql});')
+        create_cols_sql = ", ".join([f'"{c}" {COLUMN_TYPE_MAPPING[c]}' for c in clean_cols if c in COLUMN_TYPE_MAPPING.keys()] + ['"date" INTEGER'])
+        cur.execute(f'CREATE TABLE IF NOT EXISTS REVENUE ({create_cols_sql});')
 
         # Prepare column list for COPY
-        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols])
+        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols if c in COLUMN_TYPE_MAPPING.keys()] + ['"date"'])
 
         # COPY buffer reusable object
         def copy_rows(row_batch):
@@ -119,7 +133,7 @@ def _mongo_to_postgres():
             csv_buffer.seek(0)
 
             cur.copy_expert(
-                f'COPY "{collection}" ({col_list_sql}) FROM STDIN WITH CSV',
+                f'COPY REVENUE ({col_list_sql}) FROM STDIN WITH CSV',
                 csv_buffer
             )
             conn.commit()

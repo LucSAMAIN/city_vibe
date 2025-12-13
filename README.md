@@ -8,8 +8,16 @@ Students: **SAMAIN Luc, SANCHEZ Lucas & VIALLETON Rémi**
 
 ### Abstract
 
-This project aims to create a comprehensive data-driven map that grades French cities based on their overall "vibe" or quality of life. By aggregating and analyzing multiple datasets covering weather, economic indicators, environmental factors, and cultural activities, we provide insights into the best places to live and work in France. The system enables users to explore city rankings based on different criteria and make informed decisions about relocation or job opportunities.
+**CityVibe** is a data engineering project designed to help young professionals find the best city to start their career in France. By combining real estate transaction data (DVF - Demandes de Valeurs Foncières) with gridded income statistics and energy performance diagnostics (DPE), the platform computes a "city attractiveness score" that balances housing affordability against local economic prosperity.
 
+
+This project builds a comprehensive data pipeline to analyze the French real estate market and socio-economic indicators at a granular geographic level. By combining the national "Demandes de Valeurs Foncières" (DVF) dataset—containing millions of geolocated property transactions—with gridded income and poverty data ("Revenus, pauvreté et niveau de vie"), we create a platform for exploring spatial correlations between property values and local wealth.
+
+
+Key analytical queries include:
+1.  Ranking cities or regions by average property price per square meter.
+2.  Correlating local income levels (from gridded data) with real estate transaction values.
+3.  Identifying geographic areas with the highest or lowest price-to-income ratios.
 
 ## Datasets Description 
 

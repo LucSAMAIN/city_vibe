@@ -317,7 +317,7 @@ with DAG(
     end = EmptyOperator(
         task_id="end",
         dag=dag,
-        trigger_rule="all_done",
+        trigger_rule="none_failed",
     )
 
     # REVENUE tasks

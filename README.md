@@ -21,7 +21,7 @@ Key analytical queries include:
 2.  Correlating local income levels (from gridded data) with real estate transaction values.
 3.  Identifying geographic areas with the highest or lowest price-to-income ratios.
 
-### High-level overview
+### High-level workflow overview
 
 ![Process_schema](./images/dataeng.drawio.png)
 
@@ -121,4 +121,5 @@ erDiagram
 ## Dev doc :
 - For redis web gui acces use redis-instance name
 - For pgadming right click on servers then select "Register" > "Server..." and add the connection params of your env
-- Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >20min, the longest part being the load of Mongo
+- Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >10min, the longest part being the load of Mongo
+- Benchmark for the staging piepline using M5 chip with 16Go of RAM : > 

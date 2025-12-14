@@ -183,10 +183,6 @@ def _download_dvf():
     import os
     import requests
 
-    if os.path.exists("/opt/airflow/data/dvf/dvf.csv.gz"):
-        logger.info("File dvf.csv.gz already exists, skipping download.")
-        return
-
     res = requests.get(DVF_URL)
     if res.status_code == 200:
         os.makedirs("/opt/airflow/data/dvf", exist_ok=True)
@@ -258,10 +254,10 @@ def _dvf_hash_redis():
 def _dvf_to_mongo():
     from pymongo import MongoClient
     import pandas as pd
-    from dotenv import load_dotenv
+    # from dotenv import load_dotenv
     import os
     import time
-    load_dotenv()
+    # load_dotenv()
 
     # Define connection details
     client_args = {

@@ -106,3 +106,12 @@ erDiagram
 
 - Add precise localisation to fact table
 
+
+
+
+
+
+## Dev doc :
+- For redis web gui acces use redis-instance name
+- For pgadming right click on servers then select "Register" > "Server..." and add the connection params of your env
+- Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >10min, the longest part being the load of Mongo

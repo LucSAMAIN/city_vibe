@@ -1,6 +1,8 @@
 # DataEng 2024 Template Repository
 
-![Insalogo](./images/logo-insa_0.png)
+<div align="center">
+  <img src="./images/logo-insa_0.png" alt="Insalogo" width="600" />
+</div>
 
 Project [DATA Engineering](https://www.riccardotommasini.com/courses/dataeng-insa-ot/) is provided by [INSA Lyon](https://www.insa-lyon.fr/).
 
@@ -18,6 +20,12 @@ Key analytical queries include:
 1.  Ranking cities or regions by average property price per square meter.
 2.  Correlating local income levels (from gridded data) with real estate transaction values.
 3.  Identifying geographic areas with the highest or lowest price-to-income ratios.
+
+### High-level overview
+
+![Process_schema](./images/dataeng.drawio.png)
+
+
 
 ## Datasets Description 
 
@@ -103,7 +111,6 @@ erDiagram
 * README is automatically converted into pdf
 
 ## Future work
-
 - Add precise localisation to fact table
 
 
@@ -114,4 +121,4 @@ erDiagram
 ## Dev doc :
 - For redis web gui acces use redis-instance name
 - For pgadming right click on servers then select "Register" > "Server..." and add the connection params of your env
-- Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >10min, the longest part being the load of Mongo
+- Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >20min, the longest part being the load of Mongo

@@ -29,7 +29,6 @@ COLUMN_TYPE_MAPPING = {
 }
 
 ## Helper functions for data cleaning and transfer
-
 def clean_column(name):
     import re
     import unicodedata
@@ -47,8 +46,7 @@ def clean_column(name):
     return name.lower()
 
 ## Task functions
-
-def _mongo_to_postgres():
+def revenue_mongo_to_postgres():
     import psycopg2
     from pymongo import MongoClient
     import pandas as pd
@@ -174,9 +172,9 @@ with DAG(
         dag=dag,
     )
 
-    mongo_to_postgres = PythonOperator(
-        task_id="mongo_to_postgres",
-        python_callable=_mongo_to_postgres,
+    revenue_mongo_to_postgres = PythonOperator(
+        task_id="revenue_mongo_to_postgres",
+        python_callable=revenue_mongo_to_postgres,
         dag=dag,
     )
 
@@ -187,4 +185,4 @@ with DAG(
     )
 
 
-    start >> mongo_to_postgres >> end
+    start >> revenue_mongo_to_postgres >> end

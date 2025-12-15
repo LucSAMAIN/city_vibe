@@ -588,19 +588,11 @@ with DAG(
    
     # DPE tasks 
 
-    # to uncomment in production
-    download_dpe = EmptyOperator(
+    download_dpe = PythonOperator(
         task_id="download_dpe",
+        python_callable=_download_dpe,
         dag=dag,
-        trigger_rule="none_failed",
     )
-
-    # to comment in development
-    # download_dpe = PythonOperator(
-    #     task_id="download_dpe",
-    #     python_callable=_download_dpe,
-    #     dag=dag,
-    # )
 
     dpe_hash_redis = BranchPythonOperator(
         task_id="dpe_hash_redis",

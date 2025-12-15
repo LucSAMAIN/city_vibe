@@ -17,7 +17,7 @@ default_args = {
 }
 
 ## Constant definitions
-COLUMN_TYPE_MAPPING = {
+REVENUE_TYPE_MAPPING = {
     "dep": "TEXT",
     "commune": "TEXT",
     "libelle_de_la_commune": "TEXT",
@@ -30,41 +30,22 @@ COLUMN_TYPE_MAPPING = {
 
 
 DVF_COLUMN_TYPE_MAPPING = {
-    "id_mutation": "TEXT",
-    "date_mutation": "DATE",
-    "nature_mutation": "TEXT",
-    "valeur_fonciere": "FLOAT",
-    "code_postal": "TEXT",
-    "code_commune": "TEXT",
-    "nom_commune": "TEXT",
-    "code_departement": "TEXT",
-    "code_type_local": "TEXT",
-    "type_local": "TEXT",
-    "surface_reelle_bati": "FLOAT",
-    "nombre_pieces_principales": "INTEGER",
-    "surface_terrain": "FLOAT",
-    "longitude": "FLOAT",
-    "latitude": "FLOAT",
+    "id_mutation": "TEXT", # Unique transaction identifier
+    "date_mutation": "DATE", # Transaction date -> DIM_DATE
+    "nature_mutation": "TEXT", # Type of transaction (Vente, etc.)
+    "valeur_fonciere": "FLOAT", # Transaction value -> TRANSACTION_FACT.transaction_value
+    "code_postal": "TEXT", # Postal code -> DIM_INFO_COMMUNE
+    "code_commune": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
+    "nom_commune": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
+    "code_departement": "TEXT", # Department -> DIM_INFO_COMMUNE.department_num
+    "code_type_local": "TEXT", # Building type code
+    "type_local": "TEXT", # Building type -> DIM_BUILDING.type
+    "surface_reelle_bati": "FLOAT", # Built surface -> TRANSACTION_FACT.built_surface
+    "nombre_pieces_principales": "INTEGER", # Number of rooms (useful for analysis)
+    "surface_terrain": "FLOAT", # Land surface -> TRANSACTION_FACT.land_surface
+    "longitude": "FLOAT", # Geolocation -> DIM_BUILDING.long
+    "latitude": "FLOAT", # Geolocation -> DIM_BUILDING.lat
 }
-
-# Columns to keep from DVF dataset (relevant for our analysis)
-DVF_COLUMNS_TO_KEEP = [
-    "id_mutation",        # Unique transaction identifier
-    "date_mutation",      # Transaction date -> DIM_DATE
-    "nature_mutation",    # Type of transaction (Vente, etc.)
-    "valeur_fonciere",    # Transaction value -> TRANSACTION_FACT.transaction_value
-    "code_postal",        # Postal code -> DIM_INFO_COMMUNE
-    "code_commune",       # INSEE code -> DIM_INFO_COMMUNE.insee_code
-    "nom_commune",        # City name -> DIM_INFO_COMMUNE.city_name
-    "code_departement",   # Department -> DIM_INFO_COMMUNE.department_num
-    "code_type_local",    # Building type code
-    "type_local",         # Building type -> DIM_BUILDING.type
-    "surface_reelle_bati",# Built surface -> TRANSACTION_FACT.built_surface
-    "nombre_pieces_principales",  # Number of rooms (useful for analysis)
-    "surface_terrain",    # Land surface -> TRANSACTION_FACT.land_surface
-    "longitude",          # Geolocation -> DIM_BUILDING.long
-    "latitude",           # Geolocation -> DIM_BUILDING.lat
-]
 
 ## Helper functions for data cleaning and transfer
 def clean_column(name):
@@ -107,7 +88,7 @@ def revenue_mongo_to_postgres():
         password="airflow"
     )
     cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS REVENUE;')
+    cur.execute(f'DROP TABLE IF EXISTS REVENUE_STAGING;')
 
     collections = client.extracted.list_collection_names()
 
@@ -136,11 +117,11 @@ def revenue_mongo_to_postgres():
         df.columns = clean_cols
 
         # Create SQL table
-        create_cols_sql = ", ".join([f'"{c}" {COLUMN_TYPE_MAPPING[c]}' for c in clean_cols if c in COLUMN_TYPE_MAPPING.keys()] + ['"date" INTEGER'])
-        cur.execute(f'CREATE TABLE IF NOT EXISTS REVENUE ({create_cols_sql});')
+        create_cols_sql = ", ".join([f'"{c}" {REVENUE_TYPE_MAPPING[c]}' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['"date" INTEGER'])
+        cur.execute(f'CREATE TABLE IF NOT EXISTS REVENUE_STAGING ({create_cols_sql});')
 
         # Prepare column list for COPY
-        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols if c in COLUMN_TYPE_MAPPING.keys()] + ['"date"'])
+        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['"date"'])
 
         # COPY buffer reusable object
         def copy_rows(batch: pd.DataFrame):
@@ -169,13 +150,14 @@ def revenue_mongo_to_postgres():
 
             batch = batch.replace({np.nan: None})
 
-            batch = batch[[c for c in clean_cols if c in COLUMN_TYPE_MAPPING.keys()] + ['date']]
+            batch = batch[[c for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['date']]
+
 
             batch.to_csv(csv_buffer, index=False, header=False, na_rep='')
 
             csv_buffer.seek(0)
             cur.copy_expert(
-                f'COPY REVENUE ({col_list_sql}) FROM STDIN WITH CSV',
+                f'COPY REVENUE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
                 csv_buffer
             )
             conn.commit()
@@ -228,15 +210,15 @@ def dvf_mongo_to_postgres():
     # Create table with appropriate column types
     create_cols_sql = ", ".join([
         f'"{clean_column(col)}" {DVF_COLUMN_TYPE_MAPPING[col]}' 
-        for col in DVF_COLUMNS_TO_KEEP
+        for col in DVF_COLUMN_TYPE_MAPPING.keys()
     ])
-    cur.execute(f'CREATE TABLE IF NOT EXISTS DVF_STAGING ({create_cols_sql});')
+    cur.execute(f'CREATE TABLE DVF_STAGING ({create_cols_sql});')
     conn.commit()
     
     logger.info("Created DVF_STAGING table in PostgreSQL")
 
     # Prepare column list for COPY
-    clean_cols = [clean_column(col) for col in DVF_COLUMNS_TO_KEEP]
+    clean_cols = [clean_column(col) for col in DVF_COLUMN_TYPE_MAPPING.keys()]
     col_list_sql = ", ".join([f'"{c}"' for c in clean_cols])
 
     # Get DVF collection
@@ -253,16 +235,16 @@ def dvf_mongo_to_postgres():
         nonlocal processed
         
         # Keep only relevant columns (handle missing columns gracefully)
-        available_cols = [col for col in DVF_COLUMNS_TO_KEEP if col in batch_df.columns]
+        available_cols = [col for col in DVF_COLUMN_TYPE_MAPPING.keys() if col in batch_df.columns]
         batch_df = batch_df[available_cols].copy() # filter
         
         # Add missing columns as None
-        for col in DVF_COLUMNS_TO_KEEP:
+        for col in DVF_COLUMN_TYPE_MAPPING.keys():
             if col not in batch_df.columns:
                 batch_df[col] = None
         
         # Reorder columns
-        batch_df = batch_df[DVF_COLUMNS_TO_KEEP]
+        batch_df = batch_df[DVF_COLUMN_TYPE_MAPPING.keys()]
         
         # Clean column names
         batch_df.columns = clean_cols

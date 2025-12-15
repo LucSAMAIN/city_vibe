@@ -285,7 +285,7 @@ def _dvf_to_mongo():
     file_path = "/opt/airflow/data/dvf/dvf.csv"
     # df = pd.read_csv(file_path, engine='c', low_memory=False)
     # Cant do this because of memory issues, so we do it in chunks
-    chunk_size = 25000
+    chunk_size = 100000
     df_iterator = pd.read_csv(file_path, low_memory=False, chunksize=chunk_size)
     for i, df in enumerate(df_iterator):
         records = df.to_dict(orient="records")

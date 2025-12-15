@@ -65,7 +65,7 @@ def clean_column(name):
     return name.lower()
 
 ## Task functions
-def revenue_mongo_to_postgres():
+def _revenue_mongo_to_postgres():
     import psycopg2
     from pymongo import MongoClient
     import pandas as pd
@@ -136,7 +136,10 @@ def revenue_mongo_to_postgres():
             batch["revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"] = pd.to_numeric(batch["revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"], errors='coerce', downcast='float')
             
             def safe_str(val):
-                if pd.isna(val) or val == "":
+                if pd.isna(val) or val == ""  or val == " "  or val == "  "  or val =="none" \
+                    or val == "nan" or val == "NaN" or val == "Nan" or val == "NAN" or val == "nan" \
+                    or val == "None" or val == "n.c" or val == "N.C" or val == "n.c." or val == "N.C." \
+                    or val == "NULL" or val == "null" or val == ".":
                     return None
                 return str(val)
                 
@@ -152,6 +155,9 @@ def revenue_mongo_to_postgres():
 
             batch = batch[[c for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['date']]
 
+            for col in REVENUE_TYPE_MAPPING.keys():
+                if col not in batch.columns:
+                    batch[col] = None
 
             batch.to_csv(csv_buffer, index=False, header=False, na_rep='')
 
@@ -179,7 +185,7 @@ def revenue_mongo_to_postgres():
             copy_rows(pd.DataFrame(batch))
 
 
-def dvf_mongo_to_postgres():
+def _dvf_mongo_to_postgres():
     import psycopg2
     from pymongo import MongoClient
     import pandas as pd
@@ -254,10 +260,6 @@ def dvf_mongo_to_postgres():
         if 'nature_mutation' in batch_df.columns:
             batch_df = batch_df[batch_df['nature_mutation'].isin(['Vente', "Vente en l'état futur d'achèvement"])]
         
-        # Filter rows with value we really need
-        batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]
-        batch_df = batch_df[batch_df['latitude'].notna() & batch_df['longitude'].notna()]
-        
         # Convert numeric columns
         batch_df['valeur_fonciere'] = pd.to_numeric(batch_df['valeur_fonciere'], errors='coerce')
         batch_df['surface_reelle_bati'] = pd.to_numeric(batch_df['surface_reelle_bati'], errors='coerce')
@@ -265,6 +267,10 @@ def dvf_mongo_to_postgres():
         batch_df['nombre_pieces_principales'] = pd.to_numeric(batch_df['nombre_pieces_principales'], errors='coerce').astype('Int64')
         batch_df['longitude'] = pd.to_numeric(batch_df['longitude'], errors='coerce')
         batch_df['latitude'] = pd.to_numeric(batch_df['latitude'], errors='coerce')
+
+        # Filter rows with value we really need
+        batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]
+        batch_df = batch_df[batch_df['latitude'].notna() & batch_df['longitude'].notna()]
         
         # Convert date
         batch_df['date_mutation'] = pd.to_datetime(batch_df['date_mutation'], errors='coerce')
@@ -347,13 +353,13 @@ with DAG(
 
     revenue_mongo_to_postgres = PythonOperator(
         task_id="revenue_mongo_to_postgres",
-        python_callable=revenue_mongo_to_postgres,
+        python_callable=_revenue_mongo_to_postgres,
         dag=dag,
     )
 
-    dvf_mongo_to_postgres_task = PythonOperator(
+    dvf_mongo_to_postgres = PythonOperator(
         task_id="dvf_mongo_to_postgres",
-        python_callable=dvf_mongo_to_postgres,
+        python_callable=_dvf_mongo_to_postgres,
         dag=dag,
     )
 
@@ -361,7 +367,7 @@ with DAG(
     end = EmptyOperator(
         task_id="end",
         dag=dag,
-        trigger_rule="all_done",
+        trigger_rule="none_failed",
     )
 
-    start >> [revenue_mongo_to_postgres, dvf_mongo_to_postgres_task] >> end
+    start >> [revenue_mongo_to_postgres, dvf_mongo_to_postgres] >> end

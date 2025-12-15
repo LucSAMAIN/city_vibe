@@ -112,6 +112,9 @@ def revenue_mongo_to_postgres():
     collections = client.extracted.list_collection_names()
 
     for collection in collections:
+        if not collection.startswith("revenue_"):
+            continue
+
         logger.info(f"Processing collection: {collection}")
 
         # Stream documents to avoid OOM

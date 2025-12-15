@@ -318,6 +318,7 @@ def _download_dpe():
     DPE_URL = (
         "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines?"
         "format=json&size=10000&"
+        "code_departement_ban_in=01,03,07,15,26,38,42,43,63,69,73,74&"
         "select=numero_dpe,date_etablissement_dpe,etiquette_dpe,etiquette_ges,"
         "numero_voie_ban,nom_rue_ban,nom_commune_ban,code_postal_ban,"
         "code_insee_ban,identifiant_ban"

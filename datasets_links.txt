@@ -24,7 +24,7 @@ carte:
 https://statistiques-locales.insee.fr/#c=indicator&view=map2
 
 Diagnostique performance énergétique:
-https://data.ademe.fr/datasets/dpe-france
+https://data.ademe.fr/datasets/dpe03existant
 
 Demandes de valeurs foncières:
 https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees/reuses_and_dataservices

@@ -29,6 +29,9 @@ REVENUE_IDS = [
 
 DVF_URL = "https://static.data.gouv.fr/resources/demandes-de-valeurs-foncieres-geolocalisees/20251105-140205/dvf.csv.gz"
 
+OUTPUT_DPE_PATH = "/opt/airflow/data/dpe"
+OUTPUT_DPE_FILE = "dpe_03_raw.ndjson"
+
 ## Helper functions
 
 def compute_checksum(path):
@@ -50,7 +53,7 @@ def get_checksum(url):
     
     if not current_checksum:
         current_checksum = metadata.get('last_modified')
-        print("Warning: No checksum found, using last_modified.")
+        logger.error("Warning: No checksum found, using last_modified.")
 
     return current_checksum
 
@@ -86,14 +89,14 @@ def _revenue_hash_redis(**context):
         previous = previous.decode() if previous else None
 
         if previous == checksum:
-            print(f"File unchanged: {file_path} → skipping...")
+            logger.info(f"File unchanged: {file_path} → skipping...")
             continue
 
         # File is new or changed, update Redis
         to_download.append(id)
         next_task = "download_revenue"
         redis_client.set(key, checksum)
-        print(f"File changed: {file_path} → processing...")
+        logger.info(f"File changed: {file_path} → processing...")
 
     context["ti"].xcom_push(key="to_download", value=to_download)
 
@@ -183,10 +186,6 @@ def _download_dvf():
     import os
     import requests
 
-    if os.path.exists("/opt/airflow/data/dvf/dvf.csv.gz"):
-        logger.info("File dvf.csv.gz already exists, skipping download.")
-        return
-
     res = requests.get(DVF_URL)
     if res.status_code == 200:
         os.makedirs("/opt/airflow/data/dvf", exist_ok=True)
@@ -246,22 +245,22 @@ def _dvf_hash_redis():
     previous = previous.decode() if previous else None
 
     if previous == checksum:
-        print(f"File unchanged: {file_path} → skipping...")
+        logger.info(f"File unchanged: {file_path} → skipping...")
         return "end"  # Branch to end task
 
     # File is new or changed, update Redis
     redis_client.set(key, checksum)
-    print(f"File changed: {file_path} → processing...")
+    logger.info(f"File changed: {file_path} → processing...")
 
     return "download_dvf"  # Branch to download_dvf task
 
 def _dvf_to_mongo():
     from pymongo import MongoClient
     import pandas as pd
-    from dotenv import load_dotenv
+    # from dotenv import load_dotenv
     import os
     import time
-    load_dotenv()
+    # load_dotenv()
 
     # Define connection details
     client_args = {
@@ -299,9 +298,157 @@ def _dvf_to_mongo():
     logger.info("Finished inserting DVF data into MongoDB.")
     
 
+## DPE
+
+## Task functions
+
+def _download_dpe():
+    logger.info("Downloading DPE dataset...")
+    import os
+    import requests
+    import json
+    import time
+
+    #fiel dpe : numero_dpe, date_etablissement_dpe, etiquette_dpe, etiquette_ges, numero_voie_ban, nom_rue_ban, nom_commune_ban, code_postal_ban, code_insee_ban
+    # ,identifiant_ban
+
+    # --- CONFIGURATION ---
+    os.makedirs(f"{OUTPUT_DPE_PATH}", exist_ok=True)
+
+    DPE_URL = (
+        "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines?"
+        "format=json&size=10000&"
+        "code_departement_ban_in=01,03,07,15,26,38,42,43,63,69,73,74&"
+        "select=numero_dpe,date_etablissement_dpe,etiquette_dpe,etiquette_ges,"
+        "numero_voie_ban,nom_rue_ban,nom_commune_ban,code_postal_ban,"
+        "code_insee_ban,identifiant_ban"
+    )
+
+    session = requests.Session()
+    url = DPE_URL
+    total_lines = 0
+    start_time = time.time()
+
+
+    logger.info(f"Début du téléchargement vers {OUTPUT_DPE_PATH}...")
+
+
+    # On ouvre le fichier en mode écriture ('w') avec encodage UTF-8
+    with open(f"{OUTPUT_DPE_PATH}/{OUTPUT_DPE_FILE}", 'w', encoding='utf-8') as f:
+        while url:
+            try:
+                # 1. Requête API
+                response = session.get(url)
+                response.raise_for_status()
+                data = response.json()
+                
+                results = data.get('results', [])
+                if not results:
+                    break
+                
+                # 2. Écriture NDJSON
+                for row in results:
+                    json_line = json.dumps(row, ensure_ascii=False)
+                    f.write(json_line + '\n')
+                
+                total_lines += len(results)
+                
+
+                logger.info(f"{total_lines} lignes sauvegardées...")
+
+                # 3. Pagination
+                url = data.get('next')
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Erreur réseau : {e}")
+                raise e
+
+    duration = (time.time() - start_time) / 60
+    logger.info(f"Téléchargement terminé. {total_lines} lignes en {duration:.2f} min.")
+
+
+def _dpe_hash_redis():
+    """
+    Check if the DPE file has changed using Redis to store the checksum.
+    Returns True if the file is new or changed, False if unchanged.
+    """
+    import redis
+    import os
+
+    # Connect to Redis
+    redis_client = redis.Redis(
+        host="redis-instance",
+        port=6379,
+        db=0
+    )
+    file_path=f"{OUTPUT_DPE_PATH}/{OUTPUT_DPE_FILE}"
+    checksum = compute_checksum(file_path)
+    key = f"file_status:{file_path}"
+
+    previous = redis_client.get(key)
+    previous = previous.decode() if previous else None
+
+    if previous == checksum:
+        logger.info(f"File unchanged: {file_path} → skipping...")
+        return "end"  # Branch to end task
+
+    # File is new or changed, update Redis
+    redis_client.set(key, checksum)
+    logger.info(f"File changed: {file_path} → processing...")
+
+    return "dpe_to_mongo"  # Branch to dpe_to_mongo task
+
+
+
+def python_bulk_import(**context):
+    import json
+    from pymongo import MongoClient
+
+    # Connexion Mongo
+    client = MongoClient(
+        "mongodb://mongo:27017/",  
+        username='admin',
+        password='admin'
+    )
+    db = client["extracted"]
+    collection = db["dpe"]
+
+    logger.info("Drop de la collection existante...")
+    collection.drop()
+    
+    # 4. Lecture et Insertion par Batch (Optimisé pour la RAM et la Vitesse)
+    BATCH_SIZE = 100000 
+    buffer = []
+    total_count = 0
+    file_path = f"{OUTPUT_DPE_PATH}/{OUTPUT_DPE_FILE}"
+    logger.info(f"Démarrage de l'import depuis {file_path}")
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if not line.strip(): continue # Saute les lignes vides
+            
+            # Parsing rapide du JSON
+            doc = json.loads(line)
+            buffer.append(doc)
+
+            if len(buffer) >= BATCH_SIZE:
+                collection.insert_many(buffer, ordered=False)
+                total_count += len(buffer)
+                logger.info(f"-> {total_count} documents insérés...")
+                buffer = [] # Reset du buffer
+
+        # Insertion des derniers éléments restants
+        if buffer:
+            collection.insert_many(buffer, ordered=False)
+            total_count += len(buffer)
+
+    logger.info(f"Terminé ! Total : {total_count} documents.")
+
+
+
 with DAG(
-    dag_id="ingestion_dag",
-    description="Ingestion data pipeline. Downloads data from data sources and inserts it into MongoDB.",
+    dag_id="ingestion-Revenu",
+    description="Ingestion data pipeline for revenu data. Downloads data from data sources and inserts it into MongoDB.",
     start_date=datetime(2024, 1, 1),
     schedule="@monthly",
     catchup=False,
@@ -352,6 +499,35 @@ with DAG(
         dag=dag,
     )
 
+
+    # Define task dependencies
+
+    # REVENUE workflow
+    start >> revenue_hash_redis >> [download_revenue, end] 
+    download_revenue >> extract_revenue >> revenue_to_mongo >> cleanup_revenue >> end
+
+
+with DAG(
+    dag_id="ingestion-Dvf",
+    description="Ingestion data pipeline for dvf data. Downloads data from data sources and inserts it into MongoDB.",
+    start_date=datetime(2024, 1, 1),
+    schedule="@monthly",
+    catchup=False,
+    default_args=default_args,
+    tags=["city_vibe", "demo"],
+) as dag:
+
+    # Common start and end tasks
+    start = EmptyOperator(
+        task_id="start",
+        dag=dag,
+    )
+    end = EmptyOperator(
+        task_id="end",
+        dag=dag,
+        trigger_rule="none_failed",
+    )
+    
     # DVF tasks
     download_dvf = PythonOperator(
         task_id="download_dvf",
@@ -383,14 +559,53 @@ with DAG(
         dag=dag,
     )
 
-
     # Define task dependencies
 
     # DVF workflow
     start >> dvf_hash_redis >> [download_dvf, end]
     download_dvf >> unzip_dvf >> dvf_to_mongo >> cleanup_dvf >> end
 
-    # REVENUE workflow
-    start >> revenue_hash_redis >> [download_revenue, end] 
-    download_revenue >> extract_revenue >> revenue_to_mongo >> cleanup_revenue >> end
-    
+with DAG(
+    dag_id="ingestion-Dpe",
+    description="Ingestion data pipeline for dpe data. Downloads data from data sources and inserts it into MongoDB.",
+    start_date=datetime(2024, 1, 1),
+    schedule="@monthly",
+    catchup=False,
+    default_args=default_args,
+    tags=["city_vibe", "demo"],
+) as dag:
+
+    # Common start and end tasks
+    start = EmptyOperator(
+        task_id="start",
+        dag=dag,
+    )
+    end = EmptyOperator(
+        task_id="end",
+        dag=dag,
+        trigger_rule="none_failed",
+    )
+   
+    # DPE tasks 
+
+    download_dpe = PythonOperator(
+        task_id="download_dpe",
+        python_callable=_download_dpe,
+        dag=dag,
+    )
+
+    dpe_hash_redis = BranchPythonOperator(
+        task_id="dpe_hash_redis",
+        python_callable=_dpe_hash_redis,
+        dag=dag,
+    )
+
+    dpe_to_mongo= PythonOperator(
+        task_id='dpe_to_mongo',
+        python_callable=python_bulk_import
+    )
+    # Define task dependencies
+
+    #DPE workflow
+    start >> download_dpe >> dpe_hash_redis >> [dpe_to_mongo, end]
+    dpe_to_mongo >> end

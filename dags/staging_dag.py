@@ -47,6 +47,22 @@ DVF_COLUMN_TYPE_MAPPING = {
     "latitude": "FLOAT", # Geolocation -> DIM_BUILDING.lat
 }
 
+DPE_TYPE_MAPPING = {
+    "numero_dpe": "TEXT", # Unique DPE identifier -> DPE_FACT.dpe_id
+    "date_etablissement_dpe": "DATE", # Date of diagnosis -> DIM_DATE
+    "etiquette_dpe": "TEXT", # Energy consumption label (A-G) -> DPE_FACT.energy_label
+    "etiquette_ges": "TEXT", # Greenhouse gas emission label (A-G) -> DPE_FACT.ges_label
+    
+    "identifiant_ban": "TEXT", # Unique Address ID (BAN) -> DIM_BUILDING.ban_id
+    
+    "numero_voie_ban": "TEXT", # Street number -> DIM_BUILDING.street_number
+    "nom_rue_ban": "TEXT", # Street name -> DIM_BUILDING.street_name
+    
+    "code_postal_ban": "TEXT", # Postal code -> DIM_INFO_COMMUNE.postal_code
+    "code_insee_ban": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
+    "nom_commune_ban": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
+}
+
 ## Helper functions for data cleaning and transfer
 def clean_column(name):
     import re
@@ -368,10 +384,151 @@ def _dvf_mongo_to_postgres():
     client.close()
 
 
+def _dpe_mongo_to_postgres():
+    import psycopg2
+    from pymongo import MongoClient
+    import pandas as pd
+    import numpy as np
+    import io
+
+    # Connect to MongoDB
+    client = MongoClient(
+        "mongodb://mongo:27017/",
+        username="admin",
+        password="admin",
+        authSource="admin"
+    )
+
+    # Connect to PostgreSQL
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+    cur.execute(f'DROP TABLE IF EXISTS DPE_STAGING;')
+    logger.info("Deleting table DPE_STAGING")
+
+
+    ordered_cols = list(DPE_TYPE_MAPPING.keys())
+
+
+    create_cols_sql = ", ".join([f'"{col}" {dtype}' for col, dtype in DPE_TYPE_MAPPING.items()])
+    cur.execute(f'CREATE TABLE IF NOT EXISTS DPE_STAGING ({create_cols_sql});')
+    conn.commit()
+    # On prépare la liste des colonnes pour le COPY une bonne fois pour toutes
+    col_list_sql = ", ".join([f'"{c}"' for c in ordered_cols])
+    logger.info(f"Creating table DPE_STAGING with these colomns {ordered_cols}")
+
+
+    # COPY buffer reusable object
+    def copy_rows(batch: pd.DataFrame):
+        csv_buffer = io.StringIO()
+
+
+        batch["date_etablissement_dpe"] = pd.to_datetime(batch["date_etablissement_dpe"], errors='coerce')
+     
+        def safe_str(val):
+            if pd.isna(val) or val is None:
+                return None
+            s_val = str(val).strip()
+            if s_val in ["", "none", "nan", "NaN", "Nan", "NAN", "None", 
+                        "n.c", "N.C", "n.c.", "N.C.", "NULL", "null", "."]:
+                return None
+            return s_val
+        
+        def clean_code(val):
+            if pd.isna(val): return None
+            try:
+                # On tente de convertir en float puis en int pour virer le .0
+                return str(int(float(val)))
+            except:
+                return safe_str(val)
+            
+
+        for col_name, col_type in DPE_TYPE_MAPPING.items():
+            # 1. Si la colonne n'existe pas dans le DataFrame, on la crée vide
+            if col_name not in batch.columns:
+                batch[col_name] = None
+                continue
+            # 2. Application du typage selon le dictionnaire
+            if col_type == "DATE":
+                batch[col_name] = pd.to_datetime(batch[col_name], errors='coerce')
+
+            elif col_type == "FLOAT":
+                batch[col_name] = pd.to_numeric(batch[col_name], errors='coerce', downcast='float')
+
+            elif col_type == "INTEGER":
+                batch[col_name] = pd.to_numeric(batch[col_name], errors='coerce').astype('Int64')
+
+            elif col_type == "TEXT":
+                # Cas particuliers détectés par le nom de la colonne
+                if "code_" in col_name or "identifiant_" in col_name or "numero_" in col_name:
+                    # On utilise le nettoyeur de code pour éviter les ".0"
+                    batch[col_name] = batch[col_name].apply(clean_code)
+                else:
+                    batch[col_name] = batch[col_name].apply(safe_str)
+                
+                # Cas particulier : Uppercase pour les étiquettes
+                if "etiquette" in col_name:
+                    batch[col_name] = batch[col_name].str.upper()
+
+
+        batch = batch.replace({np.nan: None})
+
+        batch = batch[ordered_cols]
+
+        for col in DPE_TYPE_MAPPING.keys():
+            if col not in batch.columns:
+                batch[col] = None
+
+        batch.to_csv(csv_buffer, index=False, header=False, sep=',', na_rep='')
+
+        csv_buffer.seek(0)
+        cur.copy_expert(
+            f'COPY DPE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
+            csv_buffer
+        )
+        conn.commit()
+        
+
+
+    batch_size =50000
+    cursor = client.extracted["dpe"].find(batch_size=batch_size)
+    processed = 0
+    
+    # Stream remaining batches
+    batch = []
+    for doc in cursor:
+        batch.append(doc)
+
+        if len(batch) >= batch_size:
+            copy_rows(pd.DataFrame(batch))
+            processed += len(batch)
+            logger.info(f"Processed {processed} DPE records")
+            batch = []
+
+    # Last incomplete batch
+    if batch:
+        copy_rows(pd.DataFrame(batch))
+        processed += len(batch)
+        logger.info(f"Processed {processed} DPE records")
+
+    logger.info(f"Finally processed {processed} DPE records")
+    
+    # Cleanup
+    cur.close()
+    conn.close()
+    client.close()
+
+
+
 ## Staging DAG definition
 
 with DAG(
-    dag_id="staging_dag",
+    dag_id="staging-Revenu",
     description="Staging data pipeline. Moves raw data from MongoDB to staging Postgres.",
     start_date=datetime(2024, 1, 1),
     schedule="@monthly",
@@ -391,6 +548,29 @@ with DAG(
         dag=dag,
     )
 
+    end = EmptyOperator(
+        task_id="end",
+        dag=dag,
+        trigger_rule="none_failed",
+    )
+
+    start >> revenue_mongo_to_postgres >> end
+
+with DAG(
+    dag_id="staging-Dvf",
+    description="Staging data pipeline. Moves raw data from MongoDB to staging Postgres.",
+    start_date=datetime(2024, 1, 1),
+    schedule="@monthly",
+    catchup=False,
+    default_args=default_args,
+    tags=["city_vibe", "demo"],
+) as dag:
+
+    start = EmptyOperator(
+        task_id="start",
+        dag=dag,
+    )
+
     dvf_mongo_to_postgres = PythonOperator(
         task_id="dvf_mongo_to_postgres",
         python_callable=_dvf_mongo_to_postgres,
@@ -404,4 +584,36 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> [revenue_mongo_to_postgres, dvf_mongo_to_postgres] >> end
+    start >> dvf_mongo_to_postgres >> end
+
+with DAG(
+    dag_id="staging-Dpe",
+    description="Staging data pipeline. Moves raw data from MongoDB to staging Postgres.",
+    start_date=datetime(2024, 1, 1),
+    schedule="@monthly",
+    catchup=False,
+    default_args=default_args,
+    tags=["city_vibe", "demo"],
+) as dag:
+
+    start = EmptyOperator(
+        task_id="start",
+        dag=dag,
+    )
+
+    dpe_mongo_to_postgres = PythonOperator(
+        task_id="dpe_mongo_to_postgres",
+        python_callable=_dpe_mongo_to_postgres,
+        dag=dag,
+    )
+
+
+    end = EmptyOperator(
+        task_id="end",
+        dag=dag,
+        trigger_rule="none_failed",
+    )
+
+    start >> dpe_mongo_to_postgres >> end
+
+

@@ -119,7 +119,28 @@ erDiagram
 
 
 ## Dev doc :
+### General information
 - For redis web gui acces use redis-instance name
 - For pgadming right click on servers then select "Register" > "Server..." and add the connection params of your env
 - Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >10min, the longest part being the load of Mongo
-- Benchmark for the staging piepline using M5 chip with 16Go of RAM : > 
+
+### Useful queries
+#### dvf staging table
+
+```sql
+-- Query 1: Check if there are any departments outside ARA in the DVF_STAGING table
+SELECT DISTINCT code_departement, COUNT(*) as count
+FROM dvf_staging
+GROUP BY code_departement
+ORDER BY code_departement;
+
+-- Query 2: Count the number of distinct departments (should be 12 for ARA)
+SELECT COUNT(DISTINCT code_departement) as distinct_departments
+FROM dvf_staging;
+
+-- Query 3: Verify all departments are in ARA (bonus check)
+SELECT DISTINCT code_departement
+FROM dvf_staging
+WHERE code_departement NOT IN ('01', '03', '07', '15', '26', '38', '42', '43', '63', '69', '73', '74')
+ORDER BY code_departement;
+```

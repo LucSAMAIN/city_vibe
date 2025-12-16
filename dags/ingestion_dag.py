@@ -180,7 +180,6 @@ def _extract_revenue_to_mongo():
         logger.info(f"Inserted data from revenue_{year}.xlsx into MongoDB collection {collection_name}")
 
 # DVF
-
 def _download_dvf():
     logger.info("Downloading DVF dataset...")
     import os

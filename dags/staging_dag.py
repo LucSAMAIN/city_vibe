@@ -45,6 +45,8 @@ DVF_COLUMN_TYPE_MAPPING = {
     "surface_terrain": "FLOAT", # Land surface -> TRANSACTION_FACT.land_surface
     "longitude": "FLOAT", # Geolocation -> DIM_BUILDING.long
     "latitude": "FLOAT", # Geolocation -> DIM_BUILDING.lat
+    "adresse_numero" : "INTEGER", # Street number -> DIM_BUILDING.street_number
+    "adresse_nom_voie" : "TEXT", # Street name -> DIM_BUILDING.street_name
 }
 
 DPE_TYPE_MAPPING = {
@@ -311,12 +313,14 @@ def _dvf_mongo_to_postgres():
             batch_df = batch_df[batch_df['nature_mutation'].isin(['Vente', "Vente en l'état futur d'achèvement"])]
         
         # Convert numeric columns
-        batch_df['valeur_fonciere'] = pd.to_numeric(batch_df['valeur_fonciere'], errors='coerce')
+        batch_df['valeur_fonciere'] = pd.to_numeric(batch_df['valeur_fonciere'], errors='coerce') 
+        # Coerce option will turn invalid parsing into NaN
         batch_df['surface_reelle_bati'] = pd.to_numeric(batch_df['surface_reelle_bati'], errors='coerce')
         batch_df['surface_terrain'] = pd.to_numeric(batch_df['surface_terrain'], errors='coerce')
         batch_df['nombre_pieces_principales'] = pd.to_numeric(batch_df['nombre_pieces_principales'], errors='coerce').astype('Int64')
         batch_df['longitude'] = pd.to_numeric(batch_df['longitude'], errors='coerce')
         batch_df['latitude'] = pd.to_numeric(batch_df['latitude'], errors='coerce')
+        batch_df['adresse_numero'] = pd.to_numeric(batch_df['adresse_numero'], errors='coerce').astype('Int64')
 
         # Filter rows with value we really need
         batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]

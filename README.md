@@ -125,6 +125,7 @@ erDiagram
 - Benchmark for the ingestion pipeline using M5 chip with 16Go of RAM : >10min, the longest part being the load of Mongo
 
 ### Useful queries
+
 #### dvf staging table
 
 ```sql

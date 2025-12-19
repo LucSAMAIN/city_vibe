@@ -237,6 +237,7 @@ def _dvf_hash_redis():
     file_path = "/opt/airflow/data/dvf/dvf.csv"
     DATASET_ID = "5cc1b94a634f4165e96436c1"
     RESOURCE_ID = "d7933994-2c66-4131-a4da-cf7cd18040a4"
+    # https://www.data.gouv.fr/api/1/datasets/5cc1b94a634f4165e96436c1/resources/d7933994-2c66-4131-a4da-cf7cd18040a4/
     url = f"https://www.data.gouv.fr/api/1/datasets/{DATASET_ID}/resources/{RESOURCE_ID}/"
     checksum = get_checksum(url)
     key = f"file_status:{file_path}"

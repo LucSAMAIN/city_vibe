@@ -63,6 +63,10 @@ DPE_TYPE_MAPPING = {
     "code_postal_ban": "TEXT", # Postal code -> DIM_INFO_COMMUNE.postal_code
     "code_insee_ban": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
     "nom_commune_ban": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
+
+    "conso_5_usages_par_m2_ep": "FLOAT",      # Consommation énergie primaire
+    "emission_ges_5_usages_par_m2": "FLOAT", # Emissions GES
+    "type_batiment": "TEXT",
 }
 
 ## Helper functions for data cleaning and transfer
@@ -501,121 +505,175 @@ def _dpe_mongo_to_postgres():
         password="airflow"
     )
     cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS DPE_STAGING;')
+    ordered_cols = list(DPE_TYPE_MAPPING.keys())
+    # --- CRÉATION DE LA TABLE ---
+    cur.execute('DROP TABLE IF EXISTS DPE_STAGING;')
     logger.info("Deleting table DPE_STAGING")
 
-
-    ordered_cols = list(DPE_TYPE_MAPPING.keys())
-
-
+    # Création dynamique basée sur le mapping
     create_cols_sql = ", ".join([f'"{col}" {dtype}' for col, dtype in DPE_TYPE_MAPPING.items()])
     cur.execute(f'CREATE TABLE IF NOT EXISTS DPE_STAGING ({create_cols_sql});')
     conn.commit()
-    # On prépare la liste des colonnes pour le COPY une bonne fois pour toutes
+    
+    logger.info(f"Created table DPE_STAGING with columns: {ordered_cols}")
+
+    # Préparation de la liste des colonnes pour le SQL COPY
     col_list_sql = ", ".join([f'"{c}"' for c in ordered_cols])
-    logger.info(f"Creating table DPE_STAGING with these colomns {ordered_cols}")
 
 
-    # COPY buffer reusable object
-    def copy_rows(batch: pd.DataFrame):
+    # --- FONCTION DE TRAITEMENT ---
+    def copy_rows(batch_df: pd.DataFrame):
         csv_buffer = io.StringIO()
 
+        # Nettoyage des ID Mongo si présents
+        if "_id" in batch_df.columns:
+            batch_df = batch_df.drop(columns=["_id"])
 
-        batch["date_etablissement_dpe"] = pd.to_datetime(batch["date_etablissement_dpe"], errors='coerce')
-     
+        # Helpers de nettoyage (inclus dans le scope)
         def safe_str(val):
-            if pd.isna(val) or val is None:
-                return None
+            if pd.isna(val) or val is None: return None
             s_val = str(val).strip()
-            if s_val in ["", "none", "nan", "NaN", "Nan", "NAN", "None", 
-                        "n.c", "N.C", "n.c.", "N.C.", "NULL", "null", "."]:
-                return None
+            if s_val in ["", "none", "nan", "NaN", "NULL", "null", ".", "n.c"]: return None
             return s_val
         
         def clean_code(val):
             if pd.isna(val): return None
             try:
-                # On tente de convertir en float puis en int pour virer le .0
                 return str(int(float(val)))
             except:
                 return safe_str(val)
-            
 
+        # --- BOUCLE DE NETTOYAGE PRINCIPALE ---
         for col_name, col_type in DPE_TYPE_MAPPING.items():
-            # 1. Si la colonne n'existe pas dans le DataFrame, on la crée vide
-            if col_name not in batch.columns:
-                batch[col_name] = None
-                continue
-            # 2. Application du typage selon le dictionnaire
+            
+            # 1. Si la colonne n'existe pas dans le batch, on la crée vide
+            if col_name not in batch_df.columns:
+                batch_df[col_name] = None
+                continue # On passe, pas besoin de convertir du None
+
+            # 2. Application du typage
             if col_type == "DATE":
-                batch[col_name] = pd.to_datetime(batch[col_name], errors='coerce')
+                batch_df[col_name] = pd.to_datetime(batch_df[col_name], errors='coerce')
 
             elif col_type == "FLOAT":
-                batch[col_name] = pd.to_numeric(batch[col_name], errors='coerce', downcast='float')
+                # Cela gérera automatiquement vos nouvelles colonnes conso et emission
+                batch_df[col_name] = pd.to_numeric(batch_df[col_name], errors='coerce', downcast='float')
 
             elif col_type == "INTEGER":
-                batch[col_name] = pd.to_numeric(batch[col_name], errors='coerce').astype('Int64')
+                batch_df[col_name] = pd.to_numeric(batch_df[col_name], errors='coerce').astype('Int64')
 
             elif col_type == "TEXT":
-                # Cas particuliers détectés par le nom de la colonne
+                # Cas spécifiques (Codes postaux, etc.)
                 if "code_" in col_name or "identifiant_" in col_name or "numero_" in col_name:
-                    # On utilise le nettoyeur de code pour éviter les ".0"
-                    batch[col_name] = batch[col_name].apply(clean_code)
+                    batch_df[col_name] = batch_df[col_name].apply(clean_code)
                 else:
-                    batch[col_name] = batch[col_name].apply(safe_str)
+                    # Cas général (inclut type_batiment)
+                    batch_df[col_name] = batch_df[col_name].apply(safe_str)
                 
-                # Cas particulier : Uppercase pour les étiquettes
+                # Uppercase pour les étiquettes
                 if "etiquette" in col_name:
-                    batch[col_name] = batch[col_name].str.upper()
+                    batch_df[col_name] = batch_df[col_name].str.upper()
 
 
-        batch = batch.replace({np.nan: None})
-
-        batch = batch[ordered_cols]
-
-        for col in DPE_TYPE_MAPPING.keys():
-            if col not in batch.columns:
-                batch[col] = None
-
-        batch.to_csv(csv_buffer, index=False, header=False, sep=',', na_rep='')
-
-        csv_buffer.seek(0)
-        cur.copy_expert(
-            f'COPY DPE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
-            csv_buffer
-        )
-        conn.commit()
+        batch_df = batch_df.replace({np.nan: None})
         
+        final_df = batch_df[ordered_cols]
 
+        final_df.to_csv(csv_buffer, index=False, header=False, sep=',', na_rep='')
+        csv_buffer.seek(0)
 
-    batch_size =50000
+        try:
+            cur.copy_expert(
+                f"COPY DPE_STAGING ({col_list_sql}) FROM STDIN WITH (FORMAT CSV, NULL '')",
+                csv_buffer
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error during COPY: {e}")
+            raise e
+
+    # --- EXECUTION DU FLUX ---
+    batch_size = 50000
     cursor = client.extracted["dpe"].find(batch_size=batch_size)
     processed = 0
     
-    # Stream remaining batches
-    batch = []
+    batch_list = []
+    
     for doc in cursor:
-        batch.append(doc)
+        batch_list.append(doc)
 
-        if len(batch) >= batch_size:
-            copy_rows(pd.DataFrame(batch))
-            processed += len(batch)
+        if len(batch_list) >= batch_size:
+            copy_rows(pd.DataFrame(batch_list))
+            processed += len(batch_list)
             logger.info(f"Processed {processed} DPE records")
-            batch = []
+            batch_list = [] # Reset
 
-    # Last incomplete batch
-    if batch:
-        copy_rows(pd.DataFrame(batch))
-        processed += len(batch)
-        logger.info(f"Processed {processed} DPE records")
+    # Dernier batch incomplet
+    if batch_list:
+        copy_rows(pd.DataFrame(batch_list))
+        processed += len(batch_list)
 
-    logger.info(f"Finally processed {processed} DPE records")
+    logger.info(f"Finally processed {processed} DPE records total")
     
     # Cleanup
     cur.close()
     conn.close()
     client.close()
 
+def _dpe_filter_maisons_appartments():
+    # Filtrer les dpe pour prendre uniquement les maisons et appartement en staging
+
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DPE_STAGING
+    WHERE type_batiment NOT IN ('maison', 'appartement');
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Filtered DPE_STAGING to keep only maisons and appartements, deleted {deleted_rows} rows.")
+
+def _dpe_filter_not_null_addresses():
+    # Filtrer les dpe pour prendre enlever les null dans les adresses 
+
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DPE_STAGING
+    WHERE numero_voie_ban IS NULL OR nom_rue_ban IS NULL OR code_postal_ban IS NULL;
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Filtered DPE_STAGING to keep not null addresses, deleted {deleted_rows} rows.")
 
 
 ## Staging DAG definition
@@ -712,6 +770,18 @@ with DAG(
         dag=dag,
     )
 
+    dpe_filtering_local_type = PythonOperator(
+        task_id="dpe_filtering_local_type",
+        python_callable=_dpe_filter_maisons_appartments,
+        dag=dag,
+    )
+
+    dpe_filtering_null_addresses = PythonOperator(
+        task_id="dpe_filtering_null_addresses",
+        python_callable=_dpe_filter_not_null_addresses,
+        dag=dag,
+    )
+
 
     end = EmptyOperator(
         task_id="end",
@@ -719,6 +789,6 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dpe_mongo_to_postgres >> end
+    start >> dpe_mongo_to_postgres >> dpe_filtering_local_type >> dpe_filtering_null_addresses >> end
 
 

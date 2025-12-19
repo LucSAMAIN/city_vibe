@@ -334,6 +334,7 @@ def _dvf_mongo_to_postgres():
         batch_df['date_mutation'] = pd.to_datetime(batch_df['date_mutation'], errors='coerce')
         
         # Ensure text columns are strings
+        # Hypothese : ca prend bcp de temps de faire ca   
         for col in ['id_mutation', 'nature_mutation', 'nom_commune', 'type_local']:
             if col in batch_df.columns:
                 batch_df[col] = batch_df[col].astype(str).replace('nan', '')

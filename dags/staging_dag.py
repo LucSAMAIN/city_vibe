@@ -332,7 +332,7 @@ def _dvf_mongo_to_postgres():
         
         # Ensure text columns are strings
         for col in ['id_mutation', 'nature_mutation', 'code_postal', 'code_commune', 
-                    'nom_commune', 'code_departement', 'code_type_local', 'type_local']:
+                    'nom_commune', 'code_departement', 'type_local']:
             if col in batch_df.columns:
                 batch_df[col] = batch_df[col].astype(str).replace('nan', '')
         
@@ -610,6 +610,12 @@ with DAG(
         dag=dag,
     )
 
+    dvf_filtering_local_type = PythonOperator(
+        task_id="dvf_filtering_local_type",
+        python_callable=_dvf_filter_maisons_appartments,
+        dag=dag,
+    )
+
 
     end = EmptyOperator(
         task_id="end",
@@ -617,7 +623,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> end
 
 with DAG(
     dag_id="staging-Dpe",

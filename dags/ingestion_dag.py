@@ -214,9 +214,12 @@ def _unzip_dvf():
 
 def _cleanup_dvf():
     import os
-    os.remove("/opt/airflow/data/dvf/dvf.csv.gz")
-    logger.info("Cleaned up dvf.csv.gz")
-
+    if os.path.exists("/opt/airflow/data/dvf/dvf.csv.gz"):
+        os.remove("/opt/airflow/data/dvf/dvf.csv.gz")
+        logger.info("Cleaned up dvf.csv.gz")
+    else:
+        logger.warning("dvf.csv.gz does not exist, nothing to clean up.")
+    
 
 def _dvf_hash_redis():
     """

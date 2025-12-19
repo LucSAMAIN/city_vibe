@@ -34,10 +34,10 @@ DVF_COLUMN_TYPE_MAPPING = {
     "date_mutation": "DATE", # Transaction date -> DIM_DATE
     "nature_mutation": "TEXT", # Type of transaction (Vente, etc.)
     "valeur_fonciere": "FLOAT", # Transaction value -> TRANSACTION_FACT.transaction_value
-    "code_postal": "TEXT", # Postal code -> DIM_INFO_COMMUNE
-    "code_commune": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
+    "code_postal": "INTEGER", # Postal code -> DIM_INFO_COMMUNE
+    "code_commune": "INTEGER", # INSEE code -> DIM_INFO_COMMUNE.insee_code
     "nom_commune": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
-    "code_departement": "TEXT", # Department -> DIM_INFO_COMMUNE.department_num
+    "code_departement": "INTEGER", # Department -> DIM_INFO_COMMUNE.department_num
     "code_type_local": "INTEGER", # Building type code
     "type_local": "TEXT", # Building type -> DIM_BUILDING.type
     "surface_reelle_bati": "FLOAT", # Built surface -> TRANSACTION_FACT.built_surface
@@ -322,6 +322,9 @@ def _dvf_mongo_to_postgres():
         batch_df['latitude'] = pd.to_numeric(batch_df['latitude'], errors='coerce')
         batch_df['adresse_numero'] = pd.to_numeric(batch_df['adresse_numero'], errors='coerce').astype('Int64')
         batch_df['code_type_local'] = pd.to_numeric(batch_df['code_type_local'], errors='coerce').astype('Int64') # like 2 for appartment, 1 for house, etc.
+        batch_df['code_postal'] = pd.to_numeric(batch_df['code_postal'], errors='coerce').astype('Int64')
+        batch_df['code_commune'] = pd.to_numeric(batch_df['code_commune'], errors='coerce').astype('Int64')
+        batch_df['code_departement'] = pd.to_numeric(batch_df['code_departement'], errors='coerce').astype('Int64')
 
         # Filter rows with value we really need
         batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]
@@ -331,8 +334,7 @@ def _dvf_mongo_to_postgres():
         batch_df['date_mutation'] = pd.to_datetime(batch_df['date_mutation'], errors='coerce')
         
         # Ensure text columns are strings
-        for col in ['id_mutation', 'nature_mutation', 'code_postal', 'code_commune', 
-                    'nom_commune', 'code_departement', 'type_local']:
+        for col in ['id_mutation', 'nature_mutation', 'nom_commune', 'type_local']:
             if col in batch_df.columns:
                 batch_df[col] = batch_df[col].astype(str).replace('nan', '')
         

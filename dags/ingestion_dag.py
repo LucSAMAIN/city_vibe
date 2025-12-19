@@ -180,7 +180,6 @@ def _extract_revenue_to_mongo():
         logger.info(f"Inserted data from revenue_{year}.xlsx into MongoDB collection {collection_name}")
 
 # DVF
-
 def _download_dvf():
     logger.info("Downloading DVF dataset...")
     import os
@@ -215,9 +214,12 @@ def _unzip_dvf():
 
 def _cleanup_dvf():
     import os
-    os.remove("/opt/airflow/data/dvf/dvf.csv.gz")
-    logger.info("Cleaned up dvf.csv.gz")
-
+    if os.path.exists("/opt/airflow/data/dvf/dvf.csv.gz"):
+        os.remove("/opt/airflow/data/dvf/dvf.csv.gz")
+        logger.info("Cleaned up dvf.csv.gz")
+    else:
+        logger.warning("dvf.csv.gz does not exist, nothing to clean up.")
+    
 
 def _dvf_hash_redis():
     """
@@ -285,14 +287,18 @@ def _dvf_to_mongo():
     file_path = "/opt/airflow/data/dvf/dvf.csv"
     # df = pd.read_csv(file_path, engine='c', low_memory=False)
     # Cant do this because of memory issues, so we do it in chunks
-    chunk_size = 100000
-    df_iterator = pd.read_csv(file_path, low_memory=False, chunksize=chunk_size)
+    chunk_size = 200000
+    df_iterator = pd.read_csv(file_path, 
+                              low_memory=False, 
+                              chunksize=chunk_size,
+                              engine='c')
     for i, df in enumerate(df_iterator):
         records = df.to_dict(orient="records")
         if records:
-            collection.insert_many(records)
+            # Use unordered=True for faster bulk inserts (no guarantee of insertion order)
+            collection.insert_many(records, ordered=False)
             logger.info(f"Inserted chunk {i+1} with {len(records)} records into MongoDB 'dvf' collection.")
-        time.sleep(1)  # Small delay to avoid overwhelming the database
+        time.sleep(0.1)  # Small delay to avoid overwhelming the database
     
 
     

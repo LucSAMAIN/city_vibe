@@ -38,7 +38,7 @@ DVF_COLUMN_TYPE_MAPPING = {
     "code_commune": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
     "nom_commune": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
     "code_departement": "TEXT", # Department -> DIM_INFO_COMMUNE.department_num
-    "code_type_local": "TEXT", # Building type code
+    "code_type_local": "INTEGER", # Building type code
     "type_local": "TEXT", # Building type -> DIM_BUILDING.type
     "surface_reelle_bati": "FLOAT", # Built surface -> TRANSACTION_FACT.built_surface
     "nombre_pieces_principales": "INTEGER", # Number of rooms (useful for analysis)
@@ -321,6 +321,7 @@ def _dvf_mongo_to_postgres():
         batch_df['longitude'] = pd.to_numeric(batch_df['longitude'], errors='coerce')
         batch_df['latitude'] = pd.to_numeric(batch_df['latitude'], errors='coerce')
         batch_df['adresse_numero'] = pd.to_numeric(batch_df['adresse_numero'], errors='coerce').astype('Int64')
+        batch_df['code_type_local'] = pd.to_numeric(batch_df['code_type_local'], errors='coerce').astype('Int64') # like 2 for appartment, 1 for house, etc.
 
         # Filter rows with value we really need
         batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]
@@ -386,6 +387,34 @@ def _dvf_mongo_to_postgres():
     cur.close()
     conn.close()
     client.close()
+
+
+def _dvf_filter_maisons_appartments():
+    # Filtrer les dvf pour prendre uniquement les maisons et appartement en staging
+
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DVF_STAGING
+    WHERE code_type_local NOT IN ('1', '2'); -- 1: Maison, 2: Appartement
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    logger.info(f"Filtered DVF_STAGING to keep only maisons and appartements, deleted {deleted_rows} rows.")
+
+
 
 
 def _dpe_mongo_to_postgres():

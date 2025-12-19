@@ -185,15 +185,20 @@ def _download_dvf():
     import os
     import requests
 
-    res = requests.get(DVF_URL)
-    if res.status_code == 200:
-        os.makedirs("/opt/airflow/data/dvf", exist_ok=True)
-        with open("/opt/airflow/data/dvf/dvf.csv.gz", "wb") as f:
-            f.write(res.content)
-        logger.info("Downloaded dvf.csv.gz")
-    else:
-        logger.error(f"Error code {res.status_code} : {res.text}")
-        raise Exception("Failed to download DVF data")
+    os.makedirs("/opt/airflow/data/dvf", exist_ok=True)
+    output_path = "/opt/airflow/data/dvf/dvf.csv.gz"
+
+    with requests.get(DVF_URL, stream=True) as res:
+        if res.status_code == 200:
+            with open(output_path, "wb") as f:
+                for chunk in res.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+            
+            logger.info("Downloaded dvf.csv.gz successfully")
+        else:
+            logger.error(f"Error code {res.status_code} : {res.text}")
+            raise Exception("Failed to download DVF data")
 
 def _unzip_dvf():
     logger.info("Unzipping DVF dataset...")
@@ -287,7 +292,7 @@ def _dvf_to_mongo():
     file_path = "/opt/airflow/data/dvf/dvf.csv"
     # df = pd.read_csv(file_path, engine='c', low_memory=False)
     # Cant do this because of memory issues, so we do it in chunks
-    chunk_size = 200000
+    chunk_size = 50000
     df_iterator = pd.read_csv(file_path, 
                               low_memory=False, 
                               chunksize=chunk_size,

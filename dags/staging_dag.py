@@ -34,10 +34,10 @@ DVF_COLUMN_TYPE_MAPPING = {
     "date_mutation": "DATE", # Transaction date -> DIM_DATE
     "nature_mutation": "TEXT", # Type of transaction (Vente, etc.)
     "valeur_fonciere": "FLOAT", # Transaction value -> TRANSACTION_FACT.transaction_value
-    "code_postal": "INTEGER", # Postal code -> DIM_INFO_COMMUNE
-    "code_commune": "INTEGER", # INSEE code -> DIM_INFO_COMMUNE.insee_code
+    "code_postal": "TEXT", # Postal code -> DIM_INFO_COMMUNE
+    "code_commune": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
     "nom_commune": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
-    "code_departement": "INTEGER", # Department -> DIM_INFO_COMMUNE.department_num
+    "code_departement": "TEXT", # Department -> DIM_INFO_COMMUNE.department_num
     "code_type_local": "INTEGER", # Building type code
     "type_local": "TEXT", # Building type -> DIM_BUILDING.type
     "surface_reelle_bati": "FLOAT", # Built surface -> TRANSACTION_FACT.built_surface
@@ -45,7 +45,7 @@ DVF_COLUMN_TYPE_MAPPING = {
     "surface_terrain": "FLOAT", # Land surface -> TRANSACTION_FACT.land_surface
     "longitude": "FLOAT", # Geolocation -> DIM_BUILDING.long
     "latitude": "FLOAT", # Geolocation -> DIM_BUILDING.lat
-    "adresse_numero" : "INTEGER", # Street number -> DIM_BUILDING.street_number
+    "adresse_numero" : "TEXT", # Street number -> DIM_BUILDING.street_number
     "adresse_nom_voie" : "TEXT", # Street name -> DIM_BUILDING.street_name
 }
 
@@ -63,6 +63,10 @@ DPE_TYPE_MAPPING = {
     "code_postal_ban": "TEXT", # Postal code -> DIM_INFO_COMMUNE.postal_code
     "code_insee_ban": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
     "nom_commune_ban": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
+
+    "conso_5_usages_par_m2_ep": "FLOAT",      # Consommation énergie primaire
+    "emission_ges_5_usages_par_m2": "FLOAT", # Emissions GES
+    "type_batiment": "TEXT",
 }
 
 ## Helper functions for data cleaning and transfer
@@ -267,7 +271,7 @@ def _dvf_mongo_to_postgres():
     total_docs = collection.estimated_document_count()
     logger.info(f"Processing DVF collection with ~{total_docs} documents")
 
-    batch_size = 100000
+    batch_size = 50000
     processed = 0
     filtered_out = 0
 
@@ -279,6 +283,28 @@ def _dvf_mongo_to_postgres():
         if s.isdigit():
             return s.zfill(2)
         return s.upper()
+
+    def clean_code_5_digits(val):
+        """Pour Code Postal et Code INSEE : 01234"""
+        if pd.isna(val) or val is None or val == "":
+            return None
+        try:
+            # Gère le cas float : 1234.0 -> 1234 -> "1234" -> "01234"
+            return str(int(float(val))).zfill(5)
+        except:
+            # Gère le cas string sale
+            return str(val).strip().zfill(5)
+
+    def clean_street_num(val):
+        """Pour numéro de voie : 10, 10 BIS..."""
+        if pd.isna(val) or val is None:
+            return None
+        try:
+            # Si c'est un nombre pur (10.0 -> "10")
+            return str(int(float(val)))
+        except:
+            # Si c'est alphanumérique (10 BIS)
+            return str(val).strip()
 
     def copy_rows(batch_df: pd.DataFrame):
         """Clean and copy a batch of rows to PostgreSQL"""
@@ -301,7 +327,10 @@ def _dvf_mongo_to_postgres():
 
         # Normalize department codes and filter for ARA region
         batch_df['code_departement'] = batch_df['code_departement'].apply(normalize_department_code)
-        
+        batch_df['code_postal'] = batch_df['code_postal'].apply(clean_code_5_digits)
+        batch_df['code_commune'] = batch_df['code_commune'].apply(clean_code_5_digits)
+        batch_df['adresse_numero'] = batch_df['adresse_numero'].apply(clean_street_num)
+
         initial_count = len(batch_df)
         batch_df = batch_df[batch_df['code_departement'].isin(ARA_DEPARTMENTS)]
         filtered_out += (initial_count - len(batch_df))
@@ -320,11 +349,7 @@ def _dvf_mongo_to_postgres():
         batch_df['nombre_pieces_principales'] = pd.to_numeric(batch_df['nombre_pieces_principales'], errors='coerce').astype('Int64')
         batch_df['longitude'] = pd.to_numeric(batch_df['longitude'], errors='coerce')
         batch_df['latitude'] = pd.to_numeric(batch_df['latitude'], errors='coerce')
-        batch_df['adresse_numero'] = pd.to_numeric(batch_df['adresse_numero'], errors='coerce').astype('Int64')
         batch_df['code_type_local'] = pd.to_numeric(batch_df['code_type_local'], errors='coerce').astype('Int64') # like 2 for appartment, 1 for house, etc.
-        batch_df['code_postal'] = pd.to_numeric(batch_df['code_postal'], errors='coerce').astype('Int64')
-        batch_df['code_commune'] = pd.to_numeric(batch_df['code_commune'], errors='coerce').astype('Int64')
-        batch_df['code_departement'] = pd.to_numeric(batch_df['code_departement'], errors='coerce').astype('Int64')
 
         # Filter rows with value we really need
         batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]
@@ -417,6 +442,32 @@ def _dvf_filter_maisons_appartments():
     conn.commit()
     logger.info(f"Filtered DVF_STAGING to keep only maisons and appartements, deleted {deleted_rows} rows.")
 
+def _dvf_filter_not_null_addresses():
+    # Filtrer les dvf pour prendre enlever les null dans les adresses 
+
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DVF_STAGING
+    WHERE adresse_numero IS NULL OR adresse_nom_voie IS NULL OR code_postal IS NULL;
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Filtered DVF_STAGING to keep not null addresses, deleted {deleted_rows} rows.")
+
 def _create_dim_date():
     """Create DIM_DATE dimension table from DVF date_mutation"""
     import psycopg2
@@ -501,122 +552,267 @@ def _dpe_mongo_to_postgres():
         password="airflow"
     )
     cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS DPE_STAGING;')
+    ordered_cols = list(DPE_TYPE_MAPPING.keys())
+    # --- CRÉATION DE LA TABLE ---
+    cur.execute('DROP TABLE IF EXISTS DPE_STAGING;')
     logger.info("Deleting table DPE_STAGING")
 
-
-    ordered_cols = list(DPE_TYPE_MAPPING.keys())
-
-
+    # Création dynamique basée sur le mapping
     create_cols_sql = ", ".join([f'"{col}" {dtype}' for col, dtype in DPE_TYPE_MAPPING.items()])
     cur.execute(f'CREATE TABLE IF NOT EXISTS DPE_STAGING ({create_cols_sql});')
     conn.commit()
-    # On prépare la liste des colonnes pour le COPY une bonne fois pour toutes
+    
+    logger.info(f"Created table DPE_STAGING with columns: {ordered_cols}")
+
+    # Préparation de la liste des colonnes pour le SQL COPY
     col_list_sql = ", ".join([f'"{c}"' for c in ordered_cols])
-    logger.info(f"Creating table DPE_STAGING with these colomns {ordered_cols}")
 
 
-    # COPY buffer reusable object
-    def copy_rows(batch: pd.DataFrame):
+    # --- FONCTION DE TRAITEMENT ---
+    def copy_rows(batch_df: pd.DataFrame):
         csv_buffer = io.StringIO()
 
+        # Nettoyage des ID Mongo si présents
+        if "_id" in batch_df.columns:
+            batch_df = batch_df.drop(columns=["_id"])
 
-        batch["date_etablissement_dpe"] = pd.to_datetime(batch["date_etablissement_dpe"], errors='coerce')
-     
+        # Helpers de nettoyage (inclus dans le scope)
         def safe_str(val):
-            if pd.isna(val) or val is None:
-                return None
+            if pd.isna(val) or val is None: return None
             s_val = str(val).strip()
-            if s_val in ["", "none", "nan", "NaN", "Nan", "NAN", "None", 
-                        "n.c", "N.C", "n.c.", "N.C.", "NULL", "null", "."]:
-                return None
+            if s_val in ["", "none", "nan", "NaN", "NULL", "null", ".", "n.c"]: return None
             return s_val
         
         def clean_code(val):
             if pd.isna(val): return None
             try:
-                # On tente de convertir en float puis en int pour virer le .0
                 return str(int(float(val)))
             except:
                 return safe_str(val)
-            
 
+        # --- BOUCLE DE NETTOYAGE PRINCIPALE ---
         for col_name, col_type in DPE_TYPE_MAPPING.items():
-            # 1. Si la colonne n'existe pas dans le DataFrame, on la crée vide
-            if col_name not in batch.columns:
-                batch[col_name] = None
-                continue
-            # 2. Application du typage selon le dictionnaire
+            
+            # 1. Si la colonne n'existe pas dans le batch, on la crée vide
+            if col_name not in batch_df.columns:
+                batch_df[col_name] = None
+                continue # On passe, pas besoin de convertir du None
+
+            # 2. Application du typage
             if col_type == "DATE":
-                batch[col_name] = pd.to_datetime(batch[col_name], errors='coerce')
+                batch_df[col_name] = pd.to_datetime(batch_df[col_name], errors='coerce')
 
             elif col_type == "FLOAT":
-                batch[col_name] = pd.to_numeric(batch[col_name], errors='coerce', downcast='float')
+                # Cela gérera automatiquement vos nouvelles colonnes conso et emission
+                batch_df[col_name] = pd.to_numeric(batch_df[col_name], errors='coerce', downcast='float')
 
             elif col_type == "INTEGER":
-                batch[col_name] = pd.to_numeric(batch[col_name], errors='coerce').astype('Int64')
+                batch_df[col_name] = pd.to_numeric(batch_df[col_name], errors='coerce').astype('Int64')
 
             elif col_type == "TEXT":
-                # Cas particuliers détectés par le nom de la colonne
+                # Cas spécifiques (Codes postaux, etc.)
                 if "code_" in col_name or "identifiant_" in col_name or "numero_" in col_name:
-                    # On utilise le nettoyeur de code pour éviter les ".0"
-                    batch[col_name] = batch[col_name].apply(clean_code)
+                    batch_df[col_name] = batch_df[col_name].apply(clean_code)
                 else:
-                    batch[col_name] = batch[col_name].apply(safe_str)
+                    # Cas général (inclut type_batiment)
+                    batch_df[col_name] = batch_df[col_name].apply(safe_str)
                 
-                # Cas particulier : Uppercase pour les étiquettes
+                # Uppercase pour les étiquettes
                 if "etiquette" in col_name:
-                    batch[col_name] = batch[col_name].str.upper()
+                    batch_df[col_name] = batch_df[col_name].str.upper()
 
 
-        batch = batch.replace({np.nan: None})
-
-        batch = batch[ordered_cols]
-
-        for col in DPE_TYPE_MAPPING.keys():
-            if col not in batch.columns:
-                batch[col] = None
-
-        batch.to_csv(csv_buffer, index=False, header=False, sep=',', na_rep='')
-
-        csv_buffer.seek(0)
-        cur.copy_expert(
-            f'COPY DPE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
-            csv_buffer
-        )
-        conn.commit()
+        batch_df = batch_df.replace({np.nan: None})
         
+        final_df = batch_df[ordered_cols]
 
+        final_df.to_csv(csv_buffer, index=False, header=False, sep=',', na_rep='')
+        csv_buffer.seek(0)
 
-    batch_size =50000
+        try:
+            cur.copy_expert(
+                f"COPY DPE_STAGING ({col_list_sql}) FROM STDIN WITH (FORMAT CSV, NULL '')",
+                csv_buffer
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error during COPY: {e}")
+            raise e
+
+    # --- EXECUTION DU FLUX ---
+    batch_size = 50000
     cursor = client.extracted["dpe"].find(batch_size=batch_size)
     processed = 0
     
-    # Stream remaining batches
-    batch = []
+    batch_list = []
+    
     for doc in cursor:
-        batch.append(doc)
+        batch_list.append(doc)
 
-        if len(batch) >= batch_size:
-            copy_rows(pd.DataFrame(batch))
-            processed += len(batch)
+        if len(batch_list) >= batch_size:
+            copy_rows(pd.DataFrame(batch_list))
+            processed += len(batch_list)
             logger.info(f"Processed {processed} DPE records")
-            batch = []
+            batch_list = [] # Reset
 
-    # Last incomplete batch
-    if batch:
-        copy_rows(pd.DataFrame(batch))
-        processed += len(batch)
-        logger.info(f"Processed {processed} DPE records")
+    # Dernier batch incomplet
+    if batch_list:
+        copy_rows(pd.DataFrame(batch_list))
+        processed += len(batch_list)
 
-    logger.info(f"Finally processed {processed} DPE records")
+    logger.info(f"Finally processed {processed} DPE records total")
     
     # Cleanup
     cur.close()
     conn.close()
     client.close()
 
+def _dpe_filter_maisons_appartments():
+    # Filtrer les dpe pour prendre uniquement les maisons et appartement en staging
 
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DPE_STAGING
+    WHERE type_batiment NOT IN ('maison', 'appartement');
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Filtered DPE_STAGING to keep only maisons and appartements, deleted {deleted_rows} rows.")
+
+def _dpe_filter_not_null_addresses():
+    # Filtrer les dpe pour prendre enlever les null dans les adresses 
+
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DPE_STAGING
+    WHERE numero_voie_ban IS NULL OR nom_rue_ban IS NULL OR code_postal_ban IS NULL;
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Filtered DPE_STAGING to keep not null addresses, deleted {deleted_rows} rows.")
+
+def _dpe_normalize_streets():
+    import psycopg2
+
+    STREET_MAPPING = {
+        "ALLEE": "ALL",
+        "AVENUE": "AV",
+        "BOULEVARD": "BD",
+        "CHEMIN": "CHE",
+        "IMPASSE": "IMP",
+        "PLACE": "PL",
+        "ROUTE": "RTE",
+        "RUE": "RUE",
+        "SQUARE": "SQ",
+        # "SAINT": "ST",
+        # "SAINTE": "STE",
+        # "GENERAL": "GAL",
+        # "MARECHAL": "MAL",
+        # "FAUBOURG": "FG",
+        # "PASSAGE": "PAS",
+        # "QUAI": "QU",
+        # "RESIDENCE": "RES",
+        # "MONTEE": "MTE",
+        # "COTE": "COT",
+        # "CLOS": "CLOS" # Pas d'abréviation standard, mais on le garde pour l'exemple
+    }
+
+    # Connexion Postgres
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    logger.info("Début de la normalisation des adresses via SQL...")
+
+    try:
+
+        # 1. TRANSLATE : On remplace é->e, à->a, etc.
+        # 2. UPPER : On met tout en majuscule
+        # 3. TRIM : On enlève les espaces inutiles au début/fin
+        
+        cur.execute("""
+            UPDATE DPE_STAGING 
+            SET nom_rue_ban = UPPER(TRIM(
+                TRANSLATE(
+                    nom_rue_ban, 
+                    'ÀÂÄÈÉÊËÎÏÔÖÙÛÜÇàâäèéêëîïôöùûüçñÑ', 
+                    'AAAEEEEIIOOUUUCaaaeeeeiioouuucnN'
+                )
+            ))
+        """)
+        
+        logger.info("Accents supprimés et mise en majuscule terminée.")
+
+        # On utilise REGEXP_REPLACE avec \y qui signifie "début ou fin de mot"
+        # Cela empêche de remplacer "AUTOROUTE" par "AUTORTE" quand on remplace "ROUTE"
+        
+        for full_word, abbr in STREET_MAPPING.items():
+            if full_word == abbr:
+                continue
+
+            # La requête SQL :
+            # Remplace le mot entier 'AVENUE' par 'AV'
+            # Le flag 'g' signifie global (si le mot apparait 2 fois)
+            sql_query = f"""
+                UPDATE DPE_STAGING
+                SET nom_rue_ban = REGEXP_REPLACE(nom_rue_ban, '\\y{full_word}\\y', '{abbr}', 'g')
+                WHERE nom_rue_ban LIKE '%{full_word}%'; 
+            """
+            # Note: le WHERE LIKE optimise pour ne toucher que les lignes concernées
+            
+            cur.execute(sql_query)
+        
+        # ÉTAPE 3 : Nettoyage des articles courants (Optionnel mais recommandé pour les jointures)
+        # Ex: "RTE DE LA GLIAT" -> "RTE GLIAT" ? 
+        # cur.execute("UPDATE DPE_STAGING SET nom_rue_ban = REGEXP_REPLACE(nom_rue_ban, '\\y(DE|LA|DU|DES|LE|LES)\\y', '', 'g');")
+        # cur.execute("UPDATE DPE_STAGING SET nom_rue_ban = TRIM(REGEXP_REPLACE(nom_rue_ban, '\s+', ' ', 'g'));") # Nettoie les doubles espaces créés
+
+        conn.commit()
+        logger.info("Normalisation des adresses terminée avec succès.")
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Erreur SQL lors de la normalisation : {e}")
+        raise e
+    finally:
+        cur.close()
+        conn.close()
 
 ## Staging DAG definition
 
@@ -670,6 +866,12 @@ with DAG(
         dag=dag,
     )
 
+    dvf_filtering_null_addresses = PythonOperator(
+        task_id="dvf_filtering_null_addresses",
+        python_callable=_dvf_filter_not_null_addresses,
+        dag=dag,
+    )
+
     dvf_filtering_local_type = PythonOperator(
         task_id="dvf_filtering_local_type",
         python_callable=_dvf_filter_maisons_appartments,
@@ -689,7 +891,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_create_dim_date >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> dvf_create_dim_date >> end
 
 with DAG(
     dag_id="staging-Dpe",
@@ -712,6 +914,24 @@ with DAG(
         dag=dag,
     )
 
+    dpe_filtering_local_type = PythonOperator(
+        task_id="dpe_filtering_local_type",
+        python_callable=_dpe_filter_maisons_appartments,
+        dag=dag,
+    )
+
+    dpe_filtering_null_addresses = PythonOperator(
+        task_id="dpe_filtering_null_addresses",
+        python_callable=_dpe_filter_not_null_addresses,
+        dag=dag,
+    )
+
+    dpe_normalize_addresses = PythonOperator(
+        task_id="dpe_normalize_addresses",
+        python_callable=_dpe_normalize_streets,
+        dag=dag,
+    )
+
 
     end = EmptyOperator(
         task_id="end",
@@ -719,6 +939,6 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dpe_mongo_to_postgres >> end
+    start >> dpe_mongo_to_postgres >> dpe_filtering_local_type >> dpe_filtering_null_addresses >> dpe_normalize_addresses >> end
 
 

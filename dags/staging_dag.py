@@ -34,10 +34,10 @@ DVF_COLUMN_TYPE_MAPPING = {
     "date_mutation": "DATE", # Transaction date -> DIM_DATE
     "nature_mutation": "TEXT", # Type of transaction (Vente, etc.)
     "valeur_fonciere": "FLOAT", # Transaction value -> TRANSACTION_FACT.transaction_value
-    "code_postal": "INTEGER", # Postal code -> DIM_INFO_COMMUNE
-    "code_commune": "INTEGER", # INSEE code -> DIM_INFO_COMMUNE.insee_code
+    "code_postal": "TEXT", # Postal code -> DIM_INFO_COMMUNE
+    "code_commune": "TEXT", # INSEE code -> DIM_INFO_COMMUNE.insee_code
     "nom_commune": "TEXT", # City name -> DIM_INFO_COMMUNE.city_name
-    "code_departement": "INTEGER", # Department -> DIM_INFO_COMMUNE.department_num
+    "code_departement": "TEXT", # Department -> DIM_INFO_COMMUNE.department_num
     "code_type_local": "INTEGER", # Building type code
     "type_local": "TEXT", # Building type -> DIM_BUILDING.type
     "surface_reelle_bati": "FLOAT", # Built surface -> TRANSACTION_FACT.built_surface
@@ -45,7 +45,7 @@ DVF_COLUMN_TYPE_MAPPING = {
     "surface_terrain": "FLOAT", # Land surface -> TRANSACTION_FACT.land_surface
     "longitude": "FLOAT", # Geolocation -> DIM_BUILDING.long
     "latitude": "FLOAT", # Geolocation -> DIM_BUILDING.lat
-    "adresse_numero" : "INTEGER", # Street number -> DIM_BUILDING.street_number
+    "adresse_numero" : "TEXT", # Street number -> DIM_BUILDING.street_number
     "adresse_nom_voie" : "TEXT", # Street name -> DIM_BUILDING.street_name
 }
 
@@ -271,7 +271,7 @@ def _dvf_mongo_to_postgres():
     total_docs = collection.estimated_document_count()
     logger.info(f"Processing DVF collection with ~{total_docs} documents")
 
-    batch_size = 100000
+    batch_size = 50000
     processed = 0
     filtered_out = 0
 
@@ -283,6 +283,28 @@ def _dvf_mongo_to_postgres():
         if s.isdigit():
             return s.zfill(2)
         return s.upper()
+
+    def clean_code_5_digits(val):
+        """Pour Code Postal et Code INSEE : 01234"""
+        if pd.isna(val) or val is None or val == "":
+            return None
+        try:
+            # Gère le cas float : 1234.0 -> 1234 -> "1234" -> "01234"
+            return str(int(float(val))).zfill(5)
+        except:
+            # Gère le cas string sale
+            return str(val).strip().zfill(5)
+
+    def clean_street_num(val):
+        """Pour numéro de voie : 10, 10 BIS..."""
+        if pd.isna(val) or val is None:
+            return None
+        try:
+            # Si c'est un nombre pur (10.0 -> "10")
+            return str(int(float(val)))
+        except:
+            # Si c'est alphanumérique (10 BIS)
+            return str(val).strip()
 
     def copy_rows(batch_df: pd.DataFrame):
         """Clean and copy a batch of rows to PostgreSQL"""
@@ -305,7 +327,10 @@ def _dvf_mongo_to_postgres():
 
         # Normalize department codes and filter for ARA region
         batch_df['code_departement'] = batch_df['code_departement'].apply(normalize_department_code)
-        
+        batch_df['code_postal'] = batch_df['code_postal'].apply(clean_code_5_digits)
+        batch_df['code_commune'] = batch_df['code_commune'].apply(clean_code_5_digits)
+        batch_df['adresse_numero'] = batch_df['adresse_numero'].apply(clean_street_num)
+
         initial_count = len(batch_df)
         batch_df = batch_df[batch_df['code_departement'].isin(ARA_DEPARTMENTS)]
         filtered_out += (initial_count - len(batch_df))
@@ -324,11 +349,7 @@ def _dvf_mongo_to_postgres():
         batch_df['nombre_pieces_principales'] = pd.to_numeric(batch_df['nombre_pieces_principales'], errors='coerce').astype('Int64')
         batch_df['longitude'] = pd.to_numeric(batch_df['longitude'], errors='coerce')
         batch_df['latitude'] = pd.to_numeric(batch_df['latitude'], errors='coerce')
-        batch_df['adresse_numero'] = pd.to_numeric(batch_df['adresse_numero'], errors='coerce').astype('Int64')
         batch_df['code_type_local'] = pd.to_numeric(batch_df['code_type_local'], errors='coerce').astype('Int64') # like 2 for appartment, 1 for house, etc.
-        batch_df['code_postal'] = pd.to_numeric(batch_df['code_postal'], errors='coerce').astype('Int64')
-        batch_df['code_commune'] = pd.to_numeric(batch_df['code_commune'], errors='coerce').astype('Int64')
-        batch_df['code_departement'] = pd.to_numeric(batch_df['code_departement'], errors='coerce').astype('Int64')
 
         # Filter rows with value we really need
         batch_df = batch_df[batch_df['valeur_fonciere'].notna() & (batch_df['valeur_fonciere'] > 0)]
@@ -420,6 +441,32 @@ def _dvf_filter_maisons_appartments():
     deleted_rows = cur.rowcount
     conn.commit()
     logger.info(f"Filtered DVF_STAGING to keep only maisons and appartements, deleted {deleted_rows} rows.")
+
+def _dvf_filter_not_null_addresses():
+    # Filtrer les dvf pour prendre enlever les null dans les adresses 
+
+    # First connect to Postgres
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+    # Then execute filtering SQL
+    filter_sql = """
+    DELETE FROM DVF_STAGING
+    WHERE adresse_numero IS NULL OR adresse_nom_voie IS NULL OR code_postal IS NULL;
+    """ 
+
+    cur.execute(filter_sql)
+    deleted_rows = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"Filtered DVF_STAGING to keep not null addresses, deleted {deleted_rows} rows.")
 
 def _create_dim_date():
     """Create DIM_DATE dimension table from DVF date_mutation"""
@@ -728,6 +775,12 @@ with DAG(
         dag=dag,
     )
 
+    dvf_filtering_null_addresses = PythonOperator(
+        task_id="dvf_filtering_null_addresses",
+        python_callable=_dvf_filter_not_null_addresses,
+        dag=dag,
+    )
+
     dvf_filtering_local_type = PythonOperator(
         task_id="dvf_filtering_local_type",
         python_callable=_dvf_filter_maisons_appartments,
@@ -747,7 +800,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_create_dim_date >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> dvf_create_dim_date >> end
 
 with DAG(
     dag_id="staging-Dpe",

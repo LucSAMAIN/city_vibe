@@ -722,6 +722,97 @@ def _dpe_filter_not_null_addresses():
     conn.close()
     logger.info(f"Filtered DPE_STAGING to keep not null addresses, deleted {deleted_rows} rows.")
 
+def _dpe_normalize_streets():
+    import psycopg2
+
+    STREET_MAPPING = {
+        "ALLEE": "ALL",
+        "AVENUE": "AV",
+        "BOULEVARD": "BD",
+        "CHEMIN": "CHE",
+        "IMPASSE": "IMP",
+        "PLACE": "PL",
+        "ROUTE": "RTE",
+        "RUE": "RUE",
+        "SQUARE": "SQ",
+        # "SAINT": "ST",
+        # "SAINTE": "STE",
+        # "GENERAL": "GAL",
+        # "MARECHAL": "MAL",
+        # "FAUBOURG": "FG",
+        # "PASSAGE": "PAS",
+        # "QUAI": "QU",
+        # "RESIDENCE": "RES",
+        # "MONTEE": "MTE",
+        # "COTE": "COT",
+        # "CLOS": "CLOS" # Pas d'abréviation standard, mais on le garde pour l'exemple
+    }
+
+    # Connexion Postgres
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    logger.info("Début de la normalisation des adresses via SQL...")
+
+    try:
+
+        # 1. TRANSLATE : On remplace é->e, à->a, etc.
+        # 2. UPPER : On met tout en majuscule
+        # 3. TRIM : On enlève les espaces inutiles au début/fin
+        
+        cur.execute("""
+            UPDATE DPE_STAGING 
+            SET nom_rue_ban = UPPER(TRIM(
+                TRANSLATE(
+                    nom_rue_ban, 
+                    'ÀÂÄÈÉÊËÎÏÔÖÙÛÜÇàâäèéêëîïôöùûüçñÑ', 
+                    'AAAEEEEIIOOUUUCaaaeeeeiioouuucnN'
+                )
+            ))
+        """)
+        
+        logger.info("Accents supprimés et mise en majuscule terminée.")
+
+        # On utilise REGEXP_REPLACE avec \y qui signifie "début ou fin de mot"
+        # Cela empêche de remplacer "AUTOROUTE" par "AUTORTE" quand on remplace "ROUTE"
+        
+        for full_word, abbr in STREET_MAPPING.items():
+            if full_word == abbr:
+                continue
+
+            # La requête SQL :
+            # Remplace le mot entier 'AVENUE' par 'AV'
+            # Le flag 'g' signifie global (si le mot apparait 2 fois)
+            sql_query = f"""
+                UPDATE DPE_STAGING
+                SET nom_rue_ban = REGEXP_REPLACE(nom_rue_ban, '\\y{full_word}\\y', '{abbr}', 'g')
+                WHERE nom_rue_ban LIKE '%{full_word}%'; 
+            """
+            # Note: le WHERE LIKE optimise pour ne toucher que les lignes concernées
+            
+            cur.execute(sql_query)
+        
+        # ÉTAPE 3 : Nettoyage des articles courants (Optionnel mais recommandé pour les jointures)
+        # Ex: "RTE DE LA GLIAT" -> "RTE GLIAT" ? 
+        # cur.execute("UPDATE DPE_STAGING SET nom_rue_ban = REGEXP_REPLACE(nom_rue_ban, '\\y(DE|LA|DU|DES|LE|LES)\\y', '', 'g');")
+        # cur.execute("UPDATE DPE_STAGING SET nom_rue_ban = TRIM(REGEXP_REPLACE(nom_rue_ban, '\s+', ' ', 'g'));") # Nettoie les doubles espaces créés
+
+        conn.commit()
+        logger.info("Normalisation des adresses terminée avec succès.")
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Erreur SQL lors de la normalisation : {e}")
+        raise e
+    finally:
+        cur.close()
+        conn.close()
 
 ## Staging DAG definition
 
@@ -835,6 +926,12 @@ with DAG(
         dag=dag,
     )
 
+    dpe_normalize_addresses = PythonOperator(
+        task_id="dpe_normalize_addresses",
+        python_callable=_dpe_normalize_streets,
+        dag=dag,
+    )
+
 
     end = EmptyOperator(
         task_id="end",
@@ -842,6 +939,6 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dpe_mongo_to_postgres >> dpe_filtering_local_type >> dpe_filtering_null_addresses >> end
+    start >> dpe_mongo_to_postgres >> dpe_filtering_local_type >> dpe_filtering_null_addresses >> dpe_normalize_addresses >> end
 
 

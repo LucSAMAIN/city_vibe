@@ -96,6 +96,22 @@ def _revenue_mongo_to_postgres():
     import io
     import logging
 
+    ARA_DEPARTMENTS = {
+        "010",  # Ain
+        "030",  # Allier
+        "070",  # Ardèche
+        "150",  # Cantal
+        "260",  # Drôme
+        "380",  # Isère
+        "420",  # Loire
+        "430",  # Haute-Loire
+        "630",  # Puy-de-Dôme
+        "690",  # Rhône
+        "730",  # Savoie
+        "740",  # Haute-Savoie
+    }
+
+
     # Setup logger (assuming standard logging if not globally defined)
     logger = logging.getLogger(__name__)
 
@@ -207,6 +223,7 @@ def _revenue_mongo_to_postgres():
                     )
                     # Handle the specific "None" string artifact if needed
                     df_batch[col] = df_batch[col].replace({'None': np.nan, 'nan': np.nan})
+                    df_batch[col] = df_batch[col].str.strip()
 
             # Specific string formatting
             if 'revenu_fiscal_de_reference_par_tranche_en_euros' in df_batch.columns:
@@ -218,6 +235,7 @@ def _revenue_mongo_to_postgres():
             
             # Filter rows (Handle case where column might be NaN after cleaning)
             df_batch = df_batch[df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'] == 'TOTAL']
+            df_batch = df_batch[df_batch['dep'].isin(ARA_DEPARTMENTS)]
 
             if df_batch.empty:
                 return

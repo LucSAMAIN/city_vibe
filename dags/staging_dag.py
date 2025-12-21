@@ -26,6 +26,7 @@ REVENUE_TYPE_MAPPING = {
     "impot_net_total": "FLOAT",
     "nombre_de_foyers_fiscaux_imposes": "INTEGER",
     "revenu_fiscal_de_reference_des_foyers_fiscaux_imposes": "FLOAT",
+    "revenu_fiscal_de_reference_par_tranche_en_euros": "TEXT",
 }
 
 
@@ -93,6 +94,10 @@ def _revenue_mongo_to_postgres():
     import pandas as pd
     import numpy as np
     import io
+    import logging
+
+    # Setup logger (assuming standard logging if not globally defined)
+    logger = logging.getLogger(__name__)
 
     # Connect to Mongo
     client = MongoClient(
@@ -110,9 +115,17 @@ def _revenue_mongo_to_postgres():
         password="airflow"
     )
     cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS REVENUE_STAGING;')
+    
+    # Drop table once before processing collections
+    cur.execute('DROP TABLE IF EXISTS REVENUE_STAGING;')
+    conn.commit()
 
     collections = client.extracted.list_collection_names()
+
+    # List of values to treat as Null/None
+    na_values_list = [
+        "", " ", "  ", "none", "nan", "nan", "nan", "n.c", "n.c.", "null", "."
+    ]
 
     for collection in collections:
         if not collection.startswith("revenue_"):
@@ -120,91 +133,131 @@ def _revenue_mongo_to_postgres():
 
         logger.info(f"Processing collection: {collection}")
 
-        # Stream documents to avoid OOM
-        cursor = client.extracted[collection].find(batch_size=2000)
-
-        # Read first batch to determine schema
-        first_batch = list(cursor.limit(2000))
-
-        if not first_batch:
+        # Extract date from collection name once
+        try:
+            coll_date = int(collection.split("_")[1])
+        except (IndexError, ValueError):
+            logger.warning(f"Skipping collection with invalid date format: {collection}")
             continue
 
-        df = pd.DataFrame(first_batch)
-
-        # Drop MongoDB ID column
-        if "_id" in df.columns:
-            df = df.drop(columns=["_id"])
-
-        clean_cols = [clean_column(col) for col in df.columns]
-        df.columns = clean_cols
-
-        # Create SQL table
-        create_cols_sql = ", ".join([f'"{c}" {REVENUE_TYPE_MAPPING[c]}' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['"date" INTEGER'])
+        # Stream documents
+        cursor = client.extracted[collection].find(batch_size=2000)
+        
+        # Prepare table creation SQL (Done once per collection loop)
+        clean_cols = [clean_column(col) for col in REVENUE_TYPE_MAPPING.keys()]
+        
+        create_cols_sql = ", ".join(
+            [f'"{c}" {REVENUE_TYPE_MAPPING[c]}' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + 
+            ['"date" INTEGER']
+        )
         cur.execute(f'CREATE TABLE IF NOT EXISTS REVENUE_STAGING ({create_cols_sql});')
+        conn.commit()
 
-        # Prepare column list for COPY
-        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['"date"'])
+        # Prepare column list string for COPY
+        db_cols = [c for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['date']
+        col_list_sql = ", ".join([f'"{c}"' for c in db_cols])
 
-        # COPY buffer reusable object
-        def copy_rows(batch: pd.DataFrame):
-            csv_buffer = io.StringIO()
+        def copy_rows(batch_df: pd.DataFrame):
+            # 1. Filter columns and CREATE A COPY to avoid SettingWithCopyWarning
+            available_cols = [col for col in REVENUE_TYPE_MAPPING.keys() if col in batch_df.columns]
             
-            batch["nombre_de_foyers_fiscaux"] = pd.to_numeric(batch["nombre_de_foyers_fiscaux"], errors='coerce', downcast='integer')
-            batch["nombre_de_foyers_fiscaux"] = batch["nombre_de_foyers_fiscaux"].astype('Int64')
-            batch["revenu_fiscal_de_reference_des_foyers_fiscaux"] = pd.to_numeric(batch["revenu_fiscal_de_reference_des_foyers_fiscaux"], errors='coerce', downcast='float')
-            batch["impot_net_total"] = pd.to_numeric(batch["impot_net_total"], errors='coerce', downcast='float')
-            batch["nombre_de_foyers_fiscaux_imposes"] = pd.to_numeric(batch["nombre_de_foyers_fiscaux_imposes"], errors='coerce', downcast='integer')
-            batch["nombre_de_foyers_fiscaux_imposes"] = batch["nombre_de_foyers_fiscaux_imposes"].astype('Int64')
-            batch["revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"] = pd.to_numeric(batch["revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"], errors='coerce', downcast='float')
-            
-            def safe_str(val):
-                if pd.isna(val) or val == ""  or val == " "  or val == "  "  or val =="none" \
-                    or val == "nan" or val == "NaN" or val == "Nan" or val == "NAN" or val == "nan" \
-                    or val == "None" or val == "n.c" or val == "N.C" or val == "n.c." or val == "N.C." \
-                    or val == "NULL" or val == "null" or val == ".":
-                    return None
-                return str(val)
-                
-            batch['dep'] = batch['dep'].apply(safe_str)
-            batch['commune'] = batch['commune'].apply(lambda x: int(x)).apply(safe_str)
-            batch['libelle_de_la_commune'] = batch['libelle_de_la_commune'].apply(safe_str)
-            batch['revenu_fiscal_de_reference_par_tranche_en_euros'] = batch['revenu_fiscal_de_reference_par_tranche_en_euros'].apply(safe_str).apply(lambda x: x.upper().strip() if x is not None else x)
-            batch['date'] = int(collection.split("_")[1])
+            # This .copy() is crucial to fix the warning
+            df_batch = batch_df[available_cols].copy()
 
-            batch = batch[batch['revenu_fiscal_de_reference_par_tranche_en_euros'] == 'TOTAL']
-
-            batch = batch.replace({np.nan: None})
-
-            batch = batch[[c for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['date']]
-
+            # 2. Add missing columns as None
             for col in REVENUE_TYPE_MAPPING.keys():
-                if col not in batch.columns:
-                    batch[col] = None
+                if col not in df_batch.columns:
+                    df_batch[col] = None
 
-            batch.to_csv(csv_buffer, index=False, header=False, na_rep='')
+            # 3. Numeric Conversions
+            # Use 'Int64' (capital I) for nullable integers
+            df_batch["nombre_de_foyers_fiscaux"] = pd.to_numeric(
+                df_batch["nombre_de_foyers_fiscaux"], errors='coerce'
+            ).astype('Int64')
+            
+            df_batch['commune'] = pd.to_numeric(
+                df_batch['commune'], errors='coerce'
+            ).astype('Int64')
 
+            df_batch["nombre_de_foyers_fiscaux_imposes"] = pd.to_numeric(
+                df_batch["nombre_de_foyers_fiscaux_imposes"], errors='coerce'
+            ).astype('Int64')
+
+            # Float conversions
+            float_cols = [
+                "revenu_fiscal_de_reference_des_foyers_fiscaux",
+                "impot_net_total",
+                "revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"
+            ]
+            for fc in float_cols:
+                if fc in df_batch.columns:
+                    df_batch[fc] = pd.to_numeric(df_batch[fc], errors='coerce').astype(float)
+
+            # 4. String Cleaning (Vectorized replacement instead of row-by-row loop)
+            str_cols = ['dep', 'libelle_de_la_commune', 'revenu_fiscal_de_reference_par_tranche_en_euros']
+            
+            for col in str_cols:
+                if col in df_batch.columns:
+                    # Convert to string, normalize case to lower for comparison
+                    # Replace values in na_values_list with NaN
+                    df_batch[col] = df_batch[col].astype(str).replace(
+                        to_replace=r'(?i)^(' + '|'.join([re.escape(x) for x in na_values_list]) + ')$', 
+                        value=np.nan, 
+                        regex=True
+                    )
+                    # Handle the specific "None" string artifact if needed
+                    df_batch[col] = df_batch[col].replace({'None': np.nan, 'nan': np.nan})
+
+            # Specific string formatting
+            if 'revenu_fiscal_de_reference_par_tranche_en_euros' in df_batch.columns:
+                 df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'] = \
+                     df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'].str.upper().str.strip()
+
+            # 5. Add Date and Filter Rows
+            df_batch['date'] = coll_date
+            
+            # Filter rows (Handle case where column might be NaN after cleaning)
+            df_batch = df_batch[df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'] == 'TOTAL']
+
+            if df_batch.empty:
+                return
+
+            # 6. Final Selection & Ordering
+            # Ensure order matches col_list_sql
+            final_df = df_batch[db_cols]
+
+            # 7. Write to Buffer
+            csv_buffer = io.StringIO()
+            final_df.to_csv(csv_buffer, index=False, header=False, na_rep='')
             csv_buffer.seek(0)
+
             cur.copy_expert(
                 f'COPY REVENUE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
                 csv_buffer
             )
             conn.commit()
 
-        # Send first batch
-        copy_rows(df)
-
-        # Stream remaining batches
+        # Batch Processing Loop
         batch = []
+        import re # Imported here for the regex in copy_rows, or move to top
+        
+        df = pd.DataFrame(cursor.next(), [0])
+        df_clean_cols = [clean_column(col) for col in df.columns]
+        df.columns = df_clean_cols
+        copy_rows(df)
         for doc in cursor:
             batch.append(doc)
-
             if len(batch) >= 2000:
-                copy_rows(pd.DataFrame(batch))
+                df = pd.DataFrame(batch)
+                df.columns = df_clean_cols
+                copy_rows(df)
                 batch = []
 
-        # Last incomplete batch
+        # Process remaining
         if batch:
-            copy_rows(pd.DataFrame(batch))
+            df = pd.DataFrame(batch)
+            df.columns = df_clean_cols
+            copy_rows(df)
 
 
 def _dvf_mongo_to_postgres():

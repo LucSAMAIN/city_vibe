@@ -297,7 +297,6 @@ def _revenue_mongo_to_postgres(collection):
     if batch:
         copy_rows(pd.DataFrame(batch))
 
-
 def _dvf_mongo_to_postgres():
     import psycopg2
     from pymongo import MongoClient
@@ -355,12 +354,6 @@ def _dvf_mongo_to_postgres():
     # Prepare column list for COPY
     clean_cols = [clean_column(col) for col in DVF_COLUMN_TYPE_MAPPING.keys()]
     col_list_sql = ", ".join([f'"{c}"' for c in clean_cols])
-
-    # Get DVF collection
-    collection = client.extracted["dvf"]
-    # From doc : Returns the count of all documents in a collection or view.
-    total_docs = collection.estimated_document_count()
-    logger.info(f"Processing DVF collection with ~{total_docs} documents")
 
     batch_size = 50000
     processed = 0

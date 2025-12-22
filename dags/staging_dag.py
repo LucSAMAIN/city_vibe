@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 import logging
 
@@ -940,13 +941,33 @@ with DAG(
         dag=dag,
     ).expand(op_args=get_revenue_collections.output)
 
+    add_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="add_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE REVENUE_STAGING
+            ADD COLUMN IF NOT EXISTS join_key TEXT;
+        """,
+        dag=dag,
+    )
+
+    populate_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="populate_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE REVENUE_STAGING
+            SET join_key = LPAD(dep, 3, '0') || LPAD(commune::TEXT, 3, '0') || date;
+        """,
+        dag=dag,
+    )
+
     end = EmptyOperator(
         task_id="end",
         dag=dag,
         trigger_rule="none_failed",
     )
 
-    start >> create_revenue_table >> get_revenue_collections >> revenue_mongo_to_postgres >> end
+    start >> create_revenue_table >> get_revenue_collections >> revenue_mongo_to_postgres >> add_revenue_join_key >> populate_revenue_join_key >> end
 
 with DAG(
     dag_id="staging-Dvf",
@@ -981,6 +1002,26 @@ with DAG(
         dag=dag,
     )
 
+    add_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="add_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING
+            ADD COLUMN IF NOT EXISTS revenue_join_key TEXT;
+        """,
+        dag=dag,
+    )
+
+    populate_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="populate_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE DVF_STAGING
+            SET revenue_join_key = RPAD(code_departement, 3, '0') || RIGHT(code_commune::TEXT, 3) || LEFT(date_mutation::TEXT, 4);
+        """,
+        dag=dag,
+    )
+
     dvf_create_dim_date = PythonOperator(
         task_id="dvf_create_dim_date",
         python_callable=_create_dim_date,
@@ -994,7 +1035,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> dvf_create_dim_date >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> dvf_create_dim_date >> end
 
 with DAG(
     dag_id="staging-Dpe",

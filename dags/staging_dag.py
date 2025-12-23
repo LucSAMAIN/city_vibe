@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 import logging
 
@@ -26,6 +27,7 @@ REVENUE_TYPE_MAPPING = {
     "impot_net_total": "FLOAT",
     "nombre_de_foyers_fiscaux_imposes": "INTEGER",
     "revenu_fiscal_de_reference_des_foyers_fiscaux_imposes": "FLOAT",
+    "revenu_fiscal_de_reference_par_tranche_en_euros": "TEXT",
 }
 
 
@@ -86,13 +88,74 @@ def clean_column(name):
     # Lowercase
     return name.lower()
 
+def _create_revenue_table():
+    import psycopg2
+
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+
+    # Prepare table creation SQL (Done once per collection loop)
+    clean_cols = [clean_column(col) for col in REVENUE_TYPE_MAPPING.keys()]
+    
+    create_cols_sql = ", ".join(
+        [f'"{c}" {REVENUE_TYPE_MAPPING[c]}' for c in clean_cols] + 
+        ['"date" INTEGER']
+    )
+    cur.execute('DROP TABLE IF EXISTS REVENUE_STAGING;')
+    cur.execute(f'CREATE TABLE REVENUE_STAGING ({create_cols_sql});')
+    conn.commit()
+
+
+def _get_revenue_collections():
+    from pymongo import MongoClient
+    
+    client = MongoClient(
+        "mongodb://mongo:27017/",
+        username="admin",
+        password="admin"
+    )
+    # Return a list of collection names
+    collections = [
+        [c] for c in client.extracted.list_collection_names() 
+        if c.startswith("revenue_")
+    ]
+    client.close()
+
+    return collections
+
 ## Task functions
-def _revenue_mongo_to_postgres():
+def _revenue_mongo_to_postgres(collection):
     import psycopg2
     from pymongo import MongoClient
     import pandas as pd
     import numpy as np
     import io
+    import logging
+
+    ARA_DEPARTMENTS = {
+        "010",  # Ain
+        "030",  # Allier
+        "070",  # Ardèche
+        "150",  # Cantal
+        "260",  # Drôme
+        "380",  # Isère
+        "420",  # Loire
+        "430",  # Haute-Loire
+        "630",  # Puy-de-Dôme
+        "690",  # Rhône
+        "730",  # Savoie
+        "740",  # Haute-Savoie
+    }
+
+
+    # Setup logger (assuming standard logging if not globally defined)
+    logger = logging.getLogger(__name__)
 
     # Connect to Mongo
     client = MongoClient(
@@ -110,102 +173,130 @@ def _revenue_mongo_to_postgres():
         password="airflow"
     )
     cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS REVENUE_STAGING;')
 
-    collections = client.extracted.list_collection_names()
+    # List of values to treat as Null/None
+    na_values_list = [
+        "", " ", "  ", "none", "nan", "nan", "nan", "n.c", "n.c.", "null", "."
+    ]
 
-    for collection in collections:
-        if not collection.startswith("revenue_"):
-            continue
+    logger.info(f"Processing collection: {collection}")
 
-        logger.info(f"Processing collection: {collection}")
+    # Extract date from collection name once
+    try:
+        coll_date = int(collection.split("_")[1])
+    except (IndexError, ValueError):
+        logger.warning(f"Skipping collection with invalid date format: {collection}")
+        return
+    
+    # 2. Idempotency: Clear ONLY this date's data
+    cur.execute("DELETE FROM REVENUE_STAGING WHERE date = %s", (coll_date,))
+    conn.commit()
 
-        # Stream documents to avoid OOM
-        cursor = client.extracted[collection].find(batch_size=2000)
+    # Stream documents
+    cursor = client.extracted[collection].find(batch_size=2000)
 
-        # Read first batch to determine schema
-        first_batch = list(cursor.limit(2000))
+    # Prepare column list string for COPY
+    db_cols = [c for c in REVENUE_TYPE_MAPPING.keys()] + ['date']
+    col_list_sql = ", ".join([f'"{c}"' for c in db_cols])
 
-        if not first_batch:
-            continue
+    def copy_rows(batch_df: pd.DataFrame):
+        columns = [clean_column(col) for col in batch_df.columns]
+        batch_df.columns = columns
 
-        df = pd.DataFrame(first_batch)
+        # 1. Filter columns and CREATE A COPY to avoid SettingWithCopyWarning
+        available_cols = [col for col in REVENUE_TYPE_MAPPING.keys() if col in batch_df.columns]
+        
+        # This .copy() is crucial to fix the warning
+        df_batch = batch_df[available_cols].copy()
 
-        # Drop MongoDB ID column
-        if "_id" in df.columns:
-            df = df.drop(columns=["_id"])
+        # 2. Add missing columns as None
+        for col in REVENUE_TYPE_MAPPING.keys():
+            if col not in df_batch.columns:
+                df_batch[col] = None
 
-        clean_cols = [clean_column(col) for col in df.columns]
-        df.columns = clean_cols
+        # 3. Numeric Conversions
+        # Use 'Int64' (capital I) for nullable integers
+        df_batch["nombre_de_foyers_fiscaux"] = pd.to_numeric(
+            df_batch["nombre_de_foyers_fiscaux"], errors='coerce'
+        ).astype('Int64')
+        
+        df_batch['commune'] = pd.to_numeric(
+            df_batch['commune'], errors='coerce'
+        ).astype('Int64')
 
-        # Create SQL table
-        create_cols_sql = ", ".join([f'"{c}" {REVENUE_TYPE_MAPPING[c]}' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['"date" INTEGER'])
-        cur.execute(f'CREATE TABLE IF NOT EXISTS REVENUE_STAGING ({create_cols_sql});')
+        df_batch["nombre_de_foyers_fiscaux_imposes"] = pd.to_numeric(
+            df_batch["nombre_de_foyers_fiscaux_imposes"], errors='coerce'
+        ).astype('Int64')
 
-        # Prepare column list for COPY
-        col_list_sql = ", ".join([f'"{c}"' for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['"date"'])
+        # Float conversions
+        float_cols = [
+            "revenu_fiscal_de_reference_des_foyers_fiscaux",
+            "impot_net_total",
+            "revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"
+        ]
+        for fc in float_cols:
+            if fc in df_batch.columns:
+                df_batch[fc] = pd.to_numeric(df_batch[fc], errors='coerce').astype(float)
 
-        # COPY buffer reusable object
-        def copy_rows(batch: pd.DataFrame):
-            csv_buffer = io.StringIO()
-            
-            batch["nombre_de_foyers_fiscaux"] = pd.to_numeric(batch["nombre_de_foyers_fiscaux"], errors='coerce', downcast='integer')
-            batch["nombre_de_foyers_fiscaux"] = batch["nombre_de_foyers_fiscaux"].astype('Int64')
-            batch["revenu_fiscal_de_reference_des_foyers_fiscaux"] = pd.to_numeric(batch["revenu_fiscal_de_reference_des_foyers_fiscaux"], errors='coerce', downcast='float')
-            batch["impot_net_total"] = pd.to_numeric(batch["impot_net_total"], errors='coerce', downcast='float')
-            batch["nombre_de_foyers_fiscaux_imposes"] = pd.to_numeric(batch["nombre_de_foyers_fiscaux_imposes"], errors='coerce', downcast='integer')
-            batch["nombre_de_foyers_fiscaux_imposes"] = batch["nombre_de_foyers_fiscaux_imposes"].astype('Int64')
-            batch["revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"] = pd.to_numeric(batch["revenu_fiscal_de_reference_des_foyers_fiscaux_imposes"], errors='coerce', downcast='float')
-            
-            def safe_str(val):
-                if pd.isna(val) or val == ""  or val == " "  or val == "  "  or val =="none" \
-                    or val == "nan" or val == "NaN" or val == "Nan" or val == "NAN" or val == "nan" \
-                    or val == "None" or val == "n.c" or val == "N.C" or val == "n.c." or val == "N.C." \
-                    or val == "NULL" or val == "null" or val == ".":
-                    return None
-                return str(val)
-                
-            batch['dep'] = batch['dep'].apply(safe_str)
-            batch['commune'] = batch['commune'].apply(lambda x: int(x)).apply(safe_str)
-            batch['libelle_de_la_commune'] = batch['libelle_de_la_commune'].apply(safe_str)
-            batch['revenu_fiscal_de_reference_par_tranche_en_euros'] = batch['revenu_fiscal_de_reference_par_tranche_en_euros'].apply(safe_str).apply(lambda x: x.upper().strip() if x is not None else x)
-            batch['date'] = int(collection.split("_")[1])
+        # 4. String Cleaning (Vectorized replacement instead of row-by-row loop)
+        str_cols = ['dep', 'libelle_de_la_commune', 'revenu_fiscal_de_reference_par_tranche_en_euros']
+        
+        for col in str_cols:
+            if col in df_batch.columns:
+                # Convert to string, normalize case to lower for comparison
+                # Replace values in na_values_list with NaN
+                df_batch[col] = df_batch[col].astype(str).replace(
+                    to_replace=r'(?i)^(' + '|'.join([re.escape(x) for x in na_values_list]) + ')$', 
+                    value=np.nan, 
+                    regex=True
+                )
+                # Handle the specific "None" string artifact if needed
+                df_batch[col] = df_batch[col].replace({'None': np.nan, 'nan': np.nan})
+                df_batch[col] = df_batch[col].str.strip()
 
-            batch = batch[batch['revenu_fiscal_de_reference_par_tranche_en_euros'] == 'TOTAL']
+        # Specific string formatting
+        if 'revenu_fiscal_de_reference_par_tranche_en_euros' in df_batch.columns:
+                df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'] = \
+                    df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'].str.upper().str.strip()
 
-            batch = batch.replace({np.nan: None})
+        # 5. Add Date and Filter Rows
+        df_batch['date'] = coll_date
+        
+        # Filter rows (Handle case where column might be NaN after cleaning)
+        df_batch = df_batch[df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'] == 'TOTAL']
+        df_batch = df_batch[df_batch['dep'].isin(ARA_DEPARTMENTS)]
 
-            batch = batch[[c for c in clean_cols if c in REVENUE_TYPE_MAPPING.keys()] + ['date']]
+        if df_batch.empty:
+            return
 
-            for col in REVENUE_TYPE_MAPPING.keys():
-                if col not in batch.columns:
-                    batch[col] = None
+        # 6. Final Selection & Ordering
+        # Ensure order matches col_list_sql
+        final_df = df_batch[db_cols]
 
-            batch.to_csv(csv_buffer, index=False, header=False, na_rep='')
+        # 7. Write to Buffer
+        csv_buffer = io.StringIO()
+        final_df.to_csv(csv_buffer, index=False, header=False, na_rep='')
+        csv_buffer.seek(0)
 
-            csv_buffer.seek(0)
-            cur.copy_expert(
-                f'COPY REVENUE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
-                csv_buffer
-            )
-            conn.commit()
+        cur.copy_expert(
+            f'COPY REVENUE_STAGING ({col_list_sql}) FROM STDIN WITH CSV',
+            csv_buffer
+        )
+        conn.commit()
 
-        # Send first batch
-        copy_rows(df)
-
-        # Stream remaining batches
-        batch = []
-        for doc in cursor:
-            batch.append(doc)
-
-            if len(batch) >= 2000:
-                copy_rows(pd.DataFrame(batch))
-                batch = []
-
-        # Last incomplete batch
-        if batch:
+    # Batch Processing Loop
+    batch = []
+    import re # Imported here for the regex in copy_rows, or move to top
+    
+    for doc in cursor:
+        batch.append(doc)
+        if len(batch) >= 2000:
             copy_rows(pd.DataFrame(batch))
+            batch = []
 
+    # Process remaining
+    if batch:
+        copy_rows(pd.DataFrame(batch))
 
 def _dvf_mongo_to_postgres():
     import psycopg2
@@ -264,12 +355,6 @@ def _dvf_mongo_to_postgres():
     # Prepare column list for COPY
     clean_cols = [clean_column(col) for col in DVF_COLUMN_TYPE_MAPPING.keys()]
     col_list_sql = ", ".join([f'"{c}"' for c in clean_cols])
-
-    # Get DVF collection
-    collection = client.extracted["dvf"]
-    # From doc : Returns the count of all documents in a collection or view.
-    total_docs = collection.estimated_document_count()
-    logger.info(f"Processing DVF collection with ~{total_docs} documents")
 
     batch_size = 50000
     processed = 0
@@ -831,9 +916,42 @@ with DAG(
         dag=dag,
     )
 
-    revenue_mongo_to_postgres = PythonOperator(
+    create_revenue_table = PythonOperator(
+        task_id="create_revenue_table",
+        python_callable=_create_revenue_table,
+        dag=dag,
+    )
+
+    get_revenue_collections = PythonOperator(
+        task_id="get_revenue_collections",
+        python_callable=_get_revenue_collections,
+        dag=dag,
+    )
+
+    # Expand task for each collection
+    revenue_mongo_to_postgres = PythonOperator.partial(
         task_id="revenue_mongo_to_postgres",
         python_callable=_revenue_mongo_to_postgres,
+        dag=dag,
+    ).expand(op_args=get_revenue_collections.output)
+
+    add_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="add_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE REVENUE_STAGING
+            ADD COLUMN IF NOT EXISTS join_key TEXT;
+        """,
+        dag=dag,
+    )
+
+    populate_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="populate_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE REVENUE_STAGING
+            SET join_key = LPAD(dep, 3, '0') || LPAD(commune::TEXT, 3, '0') || date;
+        """,
         dag=dag,
     )
 
@@ -843,7 +961,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> revenue_mongo_to_postgres >> end
+    start >> create_revenue_table >> get_revenue_collections >> revenue_mongo_to_postgres >> add_revenue_join_key >> populate_revenue_join_key >> end
 
 with DAG(
     dag_id="staging-Dvf",
@@ -878,6 +996,26 @@ with DAG(
         dag=dag,
     )
 
+    add_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="add_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING
+            ADD COLUMN IF NOT EXISTS revenue_join_key TEXT;
+        """,
+        dag=dag,
+    )
+
+    populate_revenue_join_key = SQLExecuteQueryOperator(
+        task_id="populate_revenue_join_key",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE DVF_STAGING
+            SET revenue_join_key = RPAD(code_departement, 3, '0') || RIGHT(code_commune::TEXT, 3) || LEFT(date_mutation::TEXT, 4);
+        """,
+        dag=dag,
+    )
+
     dvf_create_dim_date = PythonOperator(
         task_id="dvf_create_dim_date",
         python_callable=_create_dim_date,
@@ -891,7 +1029,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> dvf_create_dim_date >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> dvf_create_dim_date >> end
 
 with DAG(
     dag_id="staging-Dpe",

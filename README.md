@@ -54,29 +54,27 @@ The project addresses the following analytical questions:
 
 ```mermaid
 erDiagram
-    TRANSACTION_FACT ||--o{ DIM_INFO_COMMUNE : "city info"
+    TRANSACTION_FACT ||--o{ DIM_REVENUE : "revenue info"
     TRANSACTION_FACT ||--o{ DIM_DATE : date
-    TRANSACTION_FACT ||--o{ DIM_BUILDING : "building information"
+    TRANSACTION_FACT ||--o{ DIM_BUILDING : "building dpe info"
     TRANSACTION_FACT {
       string id_transaction
       string  date_id
-      string  commune_id
-      string  building_id
+      string  location_id
+      string  revenue_id
+      string building_id
       float transaction_value
       float land_surface
       float built_surface
       float price_m2
+      string transaction_type
     }
-    DIM_INFO_COMMUNE {
-      string commune_id
-      string insee_code
-      string city_name
-      int postal_code
-      int department_num
-      string region_id
+    DIM_REVENUE {
+      string id_revenue
       float reference_tax_revenue_sum
       float tax_household_number
       float reference_tax_revenue
+      string revenue_class
     }
     DIM_DATE {
       string date_id
@@ -85,16 +83,20 @@ erDiagram
       timestamp month
       string month_name
       string quarter
+      string day
     }
+
    DIM_BUILDING {
       string building_id
-      string dpe_id
-      string type
-      string ghg
-      string energy_consumption
-      float lat
-      float long
-      string proj
+      string insee_code
+      string city_name
+      int postal_code
+      int department_num
+      int street_number
+      float gas_emissions
+      string gas_emissions_label
+      float energy_consumption
+      string energy_consumption_label
     }
 ```
 

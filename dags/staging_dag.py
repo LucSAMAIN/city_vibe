@@ -107,7 +107,8 @@ def _create_revenue_table():
         [f'"{c}" {REVENUE_TYPE_MAPPING[c]}' for c in clean_cols] + 
         ['"date" INTEGER']
     )
-    cur.execute(f'CREATE TABLE IF NOT EXISTS REVENUE_STAGING ({create_cols_sql});')
+    cur.execute('DROP TABLE IF EXISTS REVENUE_STAGING;')
+    cur.execute(f'CREATE TABLE REVENUE_STAGING ({create_cols_sql});')
     conn.commit()
 
 

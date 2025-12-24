@@ -600,6 +600,17 @@ def _dpe_mongo_to_postgres():
                 return str(int(float(val)))
             except:
                 return safe_str(val)
+        def clean_zip_code(val):
+            """Nettoie et force le format 5 chiffres (ex: 1537 -> 01537)"""
+            if pd.isna(val): return None
+            try:
+                # 1. On nettoie le format numérique (ex: "1537.0" -> 1537)
+                clean_num = int(float(val))
+                # 2. On convertit en string et on remplit avec des 0 à gauche jusqu'à 5 char
+                return str(clean_num).zfill(5)
+            except:
+                # Si ce n'est pas un nombre, on renvoie la chaine brute (ou None)
+                return safe_str(val)
 
         # --- BOUCLE DE NETTOYAGE PRINCIPALE ---
         for col_name, col_type in DPE_TYPE_MAPPING.items():
@@ -621,8 +632,10 @@ def _dpe_mongo_to_postgres():
                 batch_df[col_name] = pd.to_numeric(batch_df[col_name], errors='coerce').astype('Int64')
 
             elif col_type == "TEXT":
+                if "code_postal" in col_name or "code_insee" in col_name:
+                    batch_df[col_name] = batch_df[col_name].apply(clean_zip_code)
                 # Cas spécifiques (Codes postaux, etc.)
-                if "code_" in col_name or "identifiant_" in col_name or "numero_" in col_name:
+                elif "code_" in col_name or "identifiant_" in col_name or "numero_" in col_name:
                     batch_df[col_name] = batch_df[col_name].apply(clean_code)
                 else:
                     # Cas général (inclut type_batiment)
@@ -942,6 +955,29 @@ with DAG(
         dag=dag,
     )
 
+    add_address_keys = SQLExecuteQueryOperator(
+        task_id="add_address_keys",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS address_key TEXT;
+            CREATE INDEX IF NOT EXISTS idx_dvf_addr ON DVF_STAGING(address_key);
+        """,
+        dag=dag,
+    )
+
+    populate_address_keys = SQLExecuteQueryOperator(
+        task_id="populate_address_keys",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE DVF_STAGING
+            SET address_key = 
+                TRIM(code_postal) || '_' || 
+                COALESCE(adresse_numero, '') || '_' || 
+                REPLACE(UPPER(TRIM(adresse_nom_voie)), ' ', '');
+        """,
+        dag=dag,
+    )
+
 
     end = EmptyOperator(
         task_id="end",
@@ -949,7 +985,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> add_address_keys >> populate_address_keys >> dvf_create_dim_date >> end
 
 with DAG(
     dag_id="staging-Dpe",
@@ -990,6 +1026,31 @@ with DAG(
         dag=dag,
     )
 
+    add_address_keys = SQLExecuteQueryOperator(
+        task_id="add_address_keys",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DPE_STAGING ADD COLUMN IF NOT EXISTS address_key TEXT;
+            
+            -- Index pour la performance (Obligatoire vu le volume)
+            CREATE INDEX IF NOT EXISTS idx_dpe_addr ON DPE_STAGING(address_key);
+            CREATE INDEX IF NOT EXISTS idx_dpe_date ON DPE_STAGING(date_etablissement_dpe);
+        """,
+        dag=dag,
+    )
+
+    populate_address_keys = SQLExecuteQueryOperator(
+        task_id="populate_address_keys",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE DPE_STAGING
+            SET address_key = 
+                TRIM(code_postal_ban) || '_' || 
+                COALESCE(numero_voie_ban, '') || '_' || 
+                REPLACE(UPPER(TRIM(nom_rue_ban)), ' ', '');
+        """,
+        dag=dag,
+    )
 
     end = EmptyOperator(
         task_id="end",
@@ -997,6 +1058,6 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dpe_mongo_to_postgres >> dpe_filtering_local_type >> dpe_filtering_null_addresses >> dpe_normalize_addresses >> end
+    start >> dpe_mongo_to_postgres >> dpe_filtering_local_type >> dpe_filtering_null_addresses >> dpe_normalize_addresses >> add_address_keys >> populate_address_keys >> end
 
 

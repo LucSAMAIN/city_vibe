@@ -262,6 +262,22 @@ def _dvf_hash_redis():
 
     return "download_dvf"  # Branch to download_dvf task
 
+# AURA departments for DVF filtering (2-digit codes)
+ARA_DEPARTMENTS_DVF = {
+    "01",  # Ain
+    "03",  # Allier
+    "07",  # Ardèche
+    "15",  # Cantal
+    "26",  # Drôme
+    "38",  # Isère
+    "42",  # Loire
+    "43",  # Haute-Loire
+    "63",  # Puy-de-Dôme
+    "69",  # Rhône
+    "73",  # Savoie
+    "74",  # Haute-Savoie
+}
+
 def _dvf_to_mongo():
     from pymongo import MongoClient
     import pandas as pd
@@ -269,6 +285,15 @@ def _dvf_to_mongo():
     import os
     import time
     # load_dotenv()
+
+    def normalize_department_code(val):
+        """Normalize department code to 2-char string (e.g., '1' -> '01')"""
+        if pd.isna(val) or val is None:
+            return None
+        s = str(val).strip()
+        if s.isdigit():
+            return s.zfill(2)
+        return s.upper()
 
     # Define connection details
     client_args = {
@@ -288,26 +313,37 @@ def _dvf_to_mongo():
     logger.info("Cleared 'dvf' collection in MongoDB.")
 
     # Read the DVF CSV file and insert into MongoDB
-    logger.info("Inserting DVF data into MongoDB...")
+    logger.info("Inserting DVF data into MongoDB (AURA only)...")
     file_path = "/opt/airflow/data/dvf/dvf.csv"
-    # df = pd.read_csv(file_path, engine='c', low_memory=False)
     # Cant do this because of memory issues, so we do it in chunks
     chunk_size = 50000
     df_iterator = pd.read_csv(file_path, 
                               low_memory=False, 
                               chunksize=chunk_size,
                               engine='c')
+    
+    total_inserted = 0
+    total_filtered = 0
+    
     for i, df in enumerate(df_iterator):
+        initial_count = len(df)
+        
+        # Filter for AURA departments only
+        df['code_departement'] = df['code_departement'].apply(normalize_department_code)
+        df = df[df['code_departement'].isin(ARA_DEPARTMENTS_DVF)]
+        
+        filtered_count = initial_count - len(df)
+        total_filtered += filtered_count
+        
         records = df.to_dict(orient="records")
         if records:
             # Use unordered=True for faster bulk inserts (no guarantee of insertion order)
             collection.insert_many(records, ordered=False)
-            logger.info(f"Inserted chunk {i+1} with {len(records)} records into MongoDB 'dvf' collection.")
+            total_inserted += len(records)
+            logger.info(f"Chunk {i+1}: inserted {len(records)} AURA records (filtered out {filtered_count} non-AURA)")
         time.sleep(0.1)  # Small delay to avoid overwhelming the database
     
-
-    
-    logger.info("Finished inserting DVF data into MongoDB.")
+    logger.info(f"Finished inserting DVF data into MongoDB. Total: {total_inserted} AURA records (filtered out {total_filtered} non-AURA)")
     
 
 ## DPE

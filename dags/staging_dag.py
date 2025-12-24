@@ -305,20 +305,8 @@ def _dvf_mongo_to_postgres():
     import numpy as np
     import io
 
-    ARA_DEPARTMENTS = {
-        "01",  # Ain
-        "03",  # Allier
-        "07",  # Ardèche
-        "15",  # Cantal
-        "26",  # Drôme
-        "38",  # Isère
-        "42",  # Loire
-        "43",  # Haute-Loire
-        "63",  # Puy-de-Dôme
-        "69",  # Rhône
-        "73",  # Savoie
-        "74",  # Haute-Savoie
-    }
+    # Note: AURA filtering is now done at ingestion time in _dvf_to_mongo()
+    # No need to filter here anymore
 
     # Connect to MongoDB
     client = MongoClient(
@@ -358,7 +346,6 @@ def _dvf_mongo_to_postgres():
 
     batch_size = 50000
     processed = 0
-    filtered_out = 0
 
     def normalize_department_code(val):
         """Normalize department code to 2-char string (e.g., '1' -> '01')"""
@@ -393,7 +380,7 @@ def _dvf_mongo_to_postgres():
 
     def copy_rows(batch_df: pd.DataFrame):
         """Clean and copy a batch of rows to PostgreSQL"""
-        nonlocal processed, filtered_out
+        nonlocal processed
         
         # Keep only relevant columns (handle missing columns gracefully)
         available_cols = [col for col in DVF_COLUMN_TYPE_MAPPING.keys() if col in batch_df.columns]
@@ -416,9 +403,7 @@ def _dvf_mongo_to_postgres():
         batch_df['code_commune'] = batch_df['code_commune'].apply(clean_code_5_digits)
         batch_df['adresse_numero'] = batch_df['adresse_numero'].apply(clean_street_num)
 
-        initial_count = len(batch_df)
-        batch_df = batch_df[batch_df['code_departement'].isin(ARA_DEPARTMENTS)]
-        filtered_out += (initial_count - len(batch_df))
+        # Note: AURA filtering is now done at ingestion time, no need to filter here
 
         
         # Data cleaning and type conversion
@@ -494,7 +479,7 @@ def _dvf_mongo_to_postgres():
     # cur.execute('CREATE INDEX IF NOT EXISTS idx_dvf_code_departement ON DVF_STAGING (code_departement);')
     # conn.commit()
     
-    logger.info(f"Processed {processed} DVF records (filtered out {filtered_out} non-ARA)")
+    logger.info(f"Processed {processed} DVF records (AURA filtering done at ingestion)")
     
     # Cleanup
     cur.close()

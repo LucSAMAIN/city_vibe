@@ -174,10 +174,10 @@ with DAG(
                 postal_code, department_num, street_number, gas_emissions, energy_consumption
             )
             SELECT
-                md5(address_key || '_' || date_etablissement_dpe::text),
+                md5(address_key || '_' || EXTRACT(YEAR FROM DATE_TRUNC('year', date_etablissement_dpe))),
                 
                 address_key,
-                date_etablissement_dpe,
+                DATE_TRUNC('year', date_etablissement_dpe)::DATE as date_reference,
                 
                 MAX(code_insee_ban),
                 MAX(nom_commune_ban),                
@@ -191,7 +191,7 @@ with DAG(
             FROM DPE_STAGING
             WHERE address_key IS NOT NULL 
               AND date_etablissement_dpe IS NOT NULL
-            GROUP BY address_key, date_etablissement_dpe;
+            GROUP BY address_key, DATE_TRUNC('year', date_etablissement_dpe);
 
             CREATE INDEX IF NOT EXISTS idx_dim_building_lookup ON DIM_BUILDING(address_key, date_reference);
         """,

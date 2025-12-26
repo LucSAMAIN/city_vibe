@@ -234,6 +234,38 @@ with DAG(
         dag=dag,
     )
 
+    link_dvf_to_building = SQLExecuteQueryOperator(
+        task_id="link_dvf_to_building",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS building_id TEXT;
+
+            UPDATE DVF_STAGING dvf
+            SET building_id = subquery.building_id
+            FROM (
+                SELECT 
+                    dvf.id_mutation,
+                    dim.building_id
+                FROM DVF_STAGING dvf
+                LEFT JOIN LATERAL (
+                    SELECT building_id
+                    FROM DIM_BUILDING dim
+                    WHERE 
+                        dim.address_key = dvf.address_key
+                        -- On cherche le DPE fait AVANT ou PENDANT la vente
+                        AND dim.date_reference <= dvf.date_mutation
+                    ORDER BY dim.date_reference DESC
+                    LIMIT 1
+                ) dim ON TRUE
+                WHERE dim.building_id IS NOT NULL
+            ) AS subquery
+            WHERE dvf.id_mutation = subquery.id_mutation;
+            
+            CREATE INDEX IF NOT EXISTS idx_dvf_building_id ON DVF_STAGING(building_id);
+        """,
+        dag=dag,
+    )
+
     end = EmptyOperator(
         task_id="end",
         dag=dag,
@@ -241,4 +273,4 @@ with DAG(
     )
 
     # Task dependencies
-    start >> delete_dim_building_table >> create_dim_building_metrics >> update_dim_building_labels >>  end
+    start >> delete_dim_building_table >> create_dim_building_metrics >> update_dim_building_labels >> link_dvf_to_building >> end

@@ -138,8 +138,8 @@ with DAG(
         dag=dag,
     )
 
-    create_dim_building_schema = SQLExecuteQueryOperator(
-        task_id="create_dim_building_schema",
+    create_dim_building_metrics = SQLExecuteQueryOperator(
+        task_id="create_dim_building_metrics",
         conn_id="postgres_instance",
         sql="""
             CREATE TABLE IF NOT EXISTS DIM_BUILDING (
@@ -188,6 +188,24 @@ with DAG(
             WHERE address_key IS NOT NULL 
               AND date_etablissement_dpe IS NOT NULL
             GROUP BY address_key, DATE_TRUNC('year', date_etablissement_dpe);
+
+            -- INSERTION DE LA LIGNE PAR DÉFAUT (-1)
+            INSERT INTO DIM_BUILDING (
+                building_id, address_key, date_reference, insee_code, city_name, 
+                postal_code, department_num, street_number, gas_emissions, energy_consumption, nb_logements_agg
+            ) VALUES (
+                '-1',   -- building_id
+                NULL,   -- address_key
+                NULL,   -- date_reference
+                NULL,   -- insee_code
+                NULL,   -- city_name
+                NULL,   -- postal_code
+                NULL,   -- department_num
+                NULL,   -- street_number
+                NULL,   -- gas_emissions
+                NULL,   -- energy_consumption
+                0       -- nb_logements_agg (0 car aucun logement réel)
+            );
             """,
         dag=dag,
     )
@@ -312,4 +330,105 @@ with DAG(
     )
 
     # Task dependencies
-    start >> delete_dim_building_table >> create_dim_building_schema >> populate_dim_building >> create_dim_building_lookup_index >> drop_label_columns_if_exist >> create_label_columns >> update_dim_building_labels >> drop_building_id_from_dvf >> create_building_id_column_in_dvf >> link_dvf_to_building >> create_index_on_dvf_building_id >> end
+    start >> delete_dim_building_table >> create_dim_building_metrics >> populate_dim_building >> create_dim_building_lookup_index >> drop_label_columns_if_exist >> create_label_columns >> update_dim_building_labels >> drop_building_id_from_dvf >> create_building_id_column_in_dvf >> link_dvf_to_building >> create_index_on_dvf_building_id >> end
+
+with DAG(
+    dag_id="production-Fact-table",
+    description="Staging to production data pipeline. Moves cleaned data from staging postgres to production postgres and computes metrics.",
+    start_date=datetime(2024, 1, 1),
+    schedule="@monthly",
+    catchup=False,
+    default_args=default_args,
+    tags=["city_vibe", "demo"],
+) as dag:
+
+    start = EmptyOperator(
+        task_id="start",
+        dag=dag,
+    )
+
+    delete_fact_table = SQLExecuteQueryOperator(
+        task_id="delete_fact_table",
+        conn_id="postgres_instance",
+        sql="""
+            DROP TABLE IF EXISTS FACT_TABLE; 
+        """,
+        dag=dag,
+    )
+
+    create_fact_table = SQLExecuteQueryOperator(
+        task_id="create_fact_table",
+        conn_id="postgres_instance",
+        sql="""
+            CREATE TABLE IF NOT EXISTS FACT_TABLE (
+                fact_id SERIAL PRIMARY KEY,
+                id_transaction TEXT,
+                date_id TEXT,       -- FK vers DIM_DATE (Format YYYYMMDD)
+                revenue_id TEXT,    -- FK vers DIM_REVENUE (Key composite)
+                building_id TEXT,   -- FK vers DIM_BUILDING (MD5)
+                
+                transaction_value FLOAT,
+                land_surface FLOAT,
+                built_surface FLOAT,
+                price_m2 FLOAT,
+                transaction_type TEXT
+            );
+        """,
+        dag=dag,
+    )
+
+    populate_fact_table = SQLExecuteQueryOperator(
+        task_id="populate_fact_table",
+        conn_id="postgres_instance",
+        sql="""
+            TRUNCATE TABLE FACT_TABLE;
+
+            INSERT INTO FACT_TABLE (
+                id_transaction, date_id, revenue_id, building_id,
+                transaction_value, land_surface, built_surface, price_m2, transaction_type
+            )
+            SELECT
+                id_mutation,
+                -- 1. DATE_ID : Si la date est nulle -> '-1'
+                COALESCE(TO_CHAR(date_mutation, 'YYYYMMDD'), '-1'),
+
+                -- 2. REVENUE_ID : Si la clé de jointure est nulle -> '-1'
+                COALESCE(revenue_join_key, '-1'),
+                
+                -- 3. BUILDING_ID : Si le mapping DPE n'a pas marché -> '-1'
+                COALESCE(building_id, '-1'),
+                
+                -- METRIQUES
+                valeur_fonciere::FLOAT,
+                surface_terrain::FLOAT,
+                surface_reelle_bati::FLOAT,
+                
+                -- PRIX AU M2 (Gestion Division par Zéro)
+                CASE 
+                    WHEN surface_reelle_bati IS NULL OR surface_reelle_bati = 0 THEN NULL
+                    ELSE (valeur_fonciere / surface_reelle_bati)::FLOAT
+                END,
+                
+                -- TYPE
+                nature_mutation
+
+            FROM DVF_STAGING
+            -- On peut filtrer ici si tu veux exclure les transactions sans valeur
+            WHERE id_mutation IS NOT NULL;
+
+            -- 4. Index sur les Clés Étrangères (Indispensable pour la performance des Dashboards)
+            CREATE INDEX IF NOT EXISTS idx_fact_date ON FACT_TABLE(date_id);
+            CREATE INDEX IF NOT EXISTS idx_fact_rev ON FACT_TABLE(revenue_id);
+            CREATE INDEX IF NOT EXISTS idx_fact_build ON FACT_TABLE(building_id);
+        """,
+        dag=dag,
+    )
+
+    end = EmptyOperator(
+        task_id="end",
+        dag=dag,
+        trigger_rule="all_done",
+    )
+
+    # Task dependencies
+    start >> delete_fact_table >> create_fact_table >> populate_fact_table >> end

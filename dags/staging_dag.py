@@ -985,7 +985,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> add_address_keys >> populate_address_keys >> dvf_create_dim_date >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> add_address_keys >> populate_address_keys >> end
 
 with DAG(
     dag_id="staging-Dpe",

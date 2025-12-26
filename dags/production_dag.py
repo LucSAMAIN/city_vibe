@@ -97,7 +97,7 @@ def _delete_dim_building_table():
 ## Production DAG definition
 
 with DAG(
-    dag_id="production-Date-building",
+    dag_id="production-Dim-date",
     description="Staging to production data pipeline. Moves cleaned data from staging postgres to production postgres and computes metrics.",
     start_date=datetime(2024, 1, 1),
     schedule="@monthly",

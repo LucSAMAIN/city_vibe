@@ -92,6 +92,7 @@ def _delete_dim_building_table():
     )
     cur = conn.cursor()
     cur.execute('DROP TABLE IF EXISTS DIM_BUILDING;')
+    conn.commit()
 
 
 ## Production DAG definition
@@ -164,14 +165,15 @@ with DAG(
                 department_num TEXT,
                 street_number TEXT,
                 gas_emissions FLOAT,
-                energy_consumption FLOAT
+                energy_consumption FLOAT,
+                nb_logements_agg INTEGER
             );
 
             TRUNCATE TABLE DIM_BUILDING;
 
             INSERT INTO DIM_BUILDING (
                 building_id, address_key, date_reference, insee_code, city_name, 
-                postal_code, department_num, street_number, gas_emissions, energy_consumption
+                postal_code, department_num, street_number, gas_emissions, energy_consumption, nb_logements_agg
             )
             SELECT
                 md5(address_key || '_' || EXTRACT(YEAR FROM DATE_TRUNC('year', date_etablissement_dpe))),
@@ -186,7 +188,9 @@ with DAG(
                 MAX(numero_voie_ban),
                 
                 AVG(emission_ges_5_usages_par_m2)::FLOAT,
-                AVG(conso_5_usages_par_m2_ep)::FLOAT
+                AVG(conso_5_usages_par_m2_ep)::FLOAT,
+                -- On compte combien d'apparts ont été moyennés (info utile)
+                COUNT(*) as nb_logements_agg
 
             FROM DPE_STAGING
             WHERE address_key IS NOT NULL 

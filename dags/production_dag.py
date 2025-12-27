@@ -152,6 +152,7 @@ with DAG(
                 postal_code TEXT,
                 department_num TEXT,
                 street_number TEXT,
+                street_name TEXT,
                 gas_emissions FLOAT,
                 energy_consumption FLOAT,
                 nb_logements_agg INTEGER
@@ -161,7 +162,7 @@ with DAG(
 
             INSERT INTO DIM_BUILDING (
                 building_id, address_key, date_reference, insee_code, city_name, 
-                postal_code, department_num, street_number, gas_emissions, energy_consumption, nb_logements_agg
+                postal_code, department_num, street_number, street_name, gas_emissions, energy_consumption, nb_logements_agg
             )
             SELECT
                 md5(address_key || '_' || EXTRACT(YEAR FROM DATE_TRUNC('year', date_etablissement_dpe))),
@@ -174,6 +175,7 @@ with DAG(
                 MAX(code_postal_ban),
                 LEFT(MAX(code_postal_ban)::TEXT, 2),
                 MAX(numero_voie_ban),
+                MAX(nom_rue_ban),
                 
                 AVG(emission_ges_5_usages_par_m2)::FLOAT,
                 AVG(conso_5_usages_par_m2_ep)::FLOAT,

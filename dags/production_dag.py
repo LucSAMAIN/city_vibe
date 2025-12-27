@@ -80,21 +80,6 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-def _delete_dim_building_table():
-    import psycopg2
-
-    conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
-    )
-    cur = conn.cursor()
-    cur.execute('DROP TABLE IF EXISTS DIM_BUILDING;')
-    conn.commit()
-
-
 ## Production DAG definition
 
 with DAG(
@@ -145,9 +130,12 @@ with DAG(
         dag=dag,
     )
 
-    delete_dim_building_table = PythonOperator(
+    delete_dim_building_table = SQLExecuteQueryOperator(
         task_id="delete_dim_building_table",
-        python_callable=_delete_dim_building_table,
+        conn_id="postgres_instance",
+        sql="""
+            DROP TABLE IF EXISTS DIM_BUILDING; 
+        """,
         dag=dag,
     )
 

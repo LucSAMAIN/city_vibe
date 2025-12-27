@@ -1031,10 +1031,6 @@ with DAG(
         conn_id="postgres_instance",
         sql="""
             ALTER TABLE DPE_STAGING ADD COLUMN IF NOT EXISTS address_key TEXT;
-            
-            -- Index pour la performance (Obligatoire vu le volume)
-            CREATE INDEX IF NOT EXISTS idx_dpe_addr ON DPE_STAGING(address_key);
-            CREATE INDEX IF NOT EXISTS idx_dpe_date ON DPE_STAGING(date_etablissement_dpe);
         """,
         dag=dag,
     )
@@ -1048,6 +1044,10 @@ with DAG(
                 TRIM(code_postal_ban) || '_' || 
                 COALESCE(numero_voie_ban, '') || '_' || 
                 REPLACE(UPPER(TRIM(nom_rue_ban)), ' ', '');
+            
+            -- Index pour la performance (Obligatoire vu le volume)
+            CREATE INDEX IF NOT EXISTS idx_dpe_addr ON DPE_STAGING(address_key);
+            CREATE INDEX IF NOT EXISTS idx_dpe_date ON DPE_STAGING(date_etablissement_dpe);
         """,
         dag=dag,
     )

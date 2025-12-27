@@ -960,7 +960,6 @@ with DAG(
         conn_id="postgres_instance",
         sql="""
             ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS address_key TEXT;
-            CREATE INDEX IF NOT EXISTS idx_dvf_addr ON DVF_STAGING(address_key);
         """,
         dag=dag,
     )
@@ -978,6 +977,16 @@ with DAG(
         dag=dag,
     )
 
+    create_indexes = SQLExecuteQueryOperator(
+        task_id="create_indexes",
+        conn_id="postgres_instance",
+        sql="""
+            CREATE INDEX IF NOT EXISTS idx_dvf_addr ON DVF_STAGING(address_key);
+            CREATE INDEX IF NOT EXISTS idx_dvf_date ON DVF_STAGING(date_mutation);
+        """,
+        dag=dag,
+    )
+
 
     end = EmptyOperator(
         task_id="end",
@@ -985,7 +994,7 @@ with DAG(
         trigger_rule="none_failed",
     )
 
-    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> add_address_keys >> populate_address_keys >> end
+    start >> dvf_mongo_to_postgres >> dvf_filtering_local_type >> dvf_filtering_null_addresses >> add_revenue_join_key >> populate_revenue_join_key >> add_address_keys >> populate_address_keys >> create_indexes >> end
 
 with DAG(
     dag_id="staging-Dpe",

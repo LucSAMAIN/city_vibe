@@ -28,7 +28,7 @@ def _create_dim_date():
         DROP TABLE IF EXISTS DIM_DATE;
         
         CREATE TABLE DIM_DATE (
-            date_id INTEGER PRIMARY KEY,        -- Format YYYYMMDD (e.g., 20240315)
+            date_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             full_date DATE NOT NULL UNIQUE,
             year INTEGER NOT NULL,
             month INTEGER NOT NULL,             -- 1-12
@@ -43,11 +43,10 @@ def _create_dim_date():
     # Populate from DVF distinct dates
     cur.execute("""
         INSERT INTO DIM_DATE (
-            date_id, full_date, year, month, month_name,
+            full_date, year, month, month_name,
             day, day_of_week, day_name, is_weekend
         )
         SELECT DISTINCT
-            TO_CHAR(date_mutation, 'YYYYMMDD')::INTEGER AS date_id,
             date_mutation AS full_date,
             EXTRACT(YEAR FROM date_mutation)::INTEGER AS year,
             EXTRACT(MONTH FROM date_mutation)::INTEGER AS month,
@@ -144,7 +143,7 @@ with DAG(
         conn_id="postgres_instance",
         sql="""
             CREATE TABLE IF NOT EXISTS DIM_BUILDING (
-                building_id TEXT, -- On ne met pas PRIMARY KEY pour l'instant pour éviter les blocages, on gérera via index
+                building_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, 
                 address_key TEXT,
                 date_reference DATE,
                 insee_code TEXT,
@@ -166,12 +165,10 @@ with DAG(
         conn_id="postgres_instance",
         sql="""
             INSERT INTO DIM_BUILDING (
-                building_id, address_key, date_reference, insee_code, city_name, 
+                address_key, date_reference, insee_code, city_name, 
                 postal_code, department_num, street_number, street_name, gas_emissions, energy_consumption, nb_logements_agg
             )
-            SELECT
-                md5(address_key || '_' || EXTRACT(YEAR FROM DATE_TRUNC('year', date_etablissement_dpe))),
-                
+            SELECT              
                 address_key,
                 DATE_TRUNC('year', date_etablissement_dpe)::DATE as date_reference,
                 
@@ -191,8 +188,35 @@ with DAG(
             WHERE address_key IS NOT NULL 
               AND date_etablissement_dpe IS NOT NULL
             GROUP BY address_key, DATE_TRUNC('year', date_etablissement_dpe);
+            """,
+        dag=dag,
+    )
 
+    create_dim_building_lookup_index = SQLExecuteQueryOperator(
+        task_id="create_dim_building_lookup_index",
+        conn_id="postgres_instance",
+        sql="""
             CREATE INDEX IF NOT EXISTS idx_dim_building_lookup ON DIM_BUILDING(address_key, date_reference);
+        """,
+        dag=dag,
+    )
+
+    drop_label_columns_if_exist = SQLExecuteQueryOperator(
+        task_id="drop_label_columns_if_exist",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DIM_BUILDING DROP COLUMN IF EXISTS gas_emissions_label;
+            ALTER TABLE DIM_BUILDING DROP COLUMN IF EXISTS energy_consumption_label;
+        """,
+        dag=dag,
+    )
+
+    create_label_columns = SQLExecuteQueryOperator(
+        task_id="create_label_columns",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DIM_BUILDING ADD COLUMN IF NOT EXISTS gas_emissions_label TEXT;
+            ALTER TABLE DIM_BUILDING ADD COLUMN IF NOT EXISTS energy_consumption_label TEXT;
         """,
         dag=dag,
     )
@@ -201,9 +225,6 @@ with DAG(
         task_id="update_dim_building_labels",
         conn_id="postgres_instance",
         sql="""
-            ALTER TABLE DIM_BUILDING ADD COLUMN IF NOT EXISTS gas_emissions_label TEXT;
-            ALTER TABLE DIM_BUILDING ADD COLUMN IF NOT EXISTS energy_consumption_label TEXT;
-
             UPDATE DIM_BUILDING
             SET gas_emissions_label = CASE 
                 WHEN gas_emissions <= 6 THEN 'A'
@@ -229,12 +250,28 @@ with DAG(
         dag=dag,
     )
 
+    drop_building_id_from_dvf = SQLExecuteQueryOperator(
+        task_id="drop_building_id_from_dvf",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING DROP COLUMN IF EXISTS building_id;
+        """,
+        dag=dag,
+    )
+
+    create_building_id_column_in_dvf = SQLExecuteQueryOperator(
+        task_id="create_building_id_column_in_dvf",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS building_id BIGINT;
+        """,
+        dag=dag,
+    )
+
     link_dvf_to_building = SQLExecuteQueryOperator(
         task_id="link_dvf_to_building",
         conn_id="postgres_instance",
         sql="""
-            ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS building_id TEXT;
-
             UPDATE DVF_STAGING dvf
             SET building_id = subquery.building_id
             FROM (
@@ -255,7 +292,14 @@ with DAG(
                 WHERE dim.building_id IS NOT NULL
             ) AS subquery
             WHERE dvf.id_mutation = subquery.id_mutation;
-            
+        """,
+        dag=dag,
+    )
+
+    create_index_on_dvf_building_id = SQLExecuteQueryOperator(
+        task_id="create_index_on_dvf_building_id",
+        conn_id="postgres_instance",
+        sql="""
             CREATE INDEX IF NOT EXISTS idx_dvf_building_id ON DVF_STAGING(building_id);
         """,
         dag=dag,
@@ -268,4 +312,4 @@ with DAG(
     )
 
     # Task dependencies
-    start >> delete_dim_building_table >> create_dim_building_schema >> populate_dim_building >> update_dim_building_labels >> link_dvf_to_building >> end
+    start >> delete_dim_building_table >> create_dim_building_schema >> populate_dim_building >> create_dim_building_lookup_index >> drop_label_columns_if_exist >> create_label_columns >> update_dim_building_labels >> drop_building_id_from_dvf >> create_building_id_column_in_dvf >> link_dvf_to_building >> create_index_on_dvf_building_id >> end

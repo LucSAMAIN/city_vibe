@@ -139,8 +139,8 @@ with DAG(
         dag=dag,
     )
 
-    create_dim_building_metrics = SQLExecuteQueryOperator(
-        task_id="create_dim_building_metrics",
+    create_dim_building_schema = SQLExecuteQueryOperator(
+        task_id="create_dim_building_schema",
         conn_id="postgres_instance",
         sql="""
             CREATE TABLE IF NOT EXISTS DIM_BUILDING (
@@ -157,9 +157,14 @@ with DAG(
                 energy_consumption FLOAT,
                 nb_logements_agg INTEGER
             );
+        """,
+        dag=dag,
+    )
 
-            TRUNCATE TABLE DIM_BUILDING;
-
+    populate_dim_building = SQLExecuteQueryOperator(
+        task_id="populate_dim_building",
+        conn_id="postgres_instance",
+        sql="""
             INSERT INTO DIM_BUILDING (
                 building_id, address_key, date_reference, insee_code, city_name, 
                 postal_code, department_num, street_number, street_name, gas_emissions, energy_consumption, nb_logements_agg
@@ -263,4 +268,4 @@ with DAG(
     )
 
     # Task dependencies
-    start >> delete_dim_building_table >> create_dim_building_metrics >> update_dim_building_labels >> link_dvf_to_building >> end
+    start >> delete_dim_building_table >> create_dim_building_schema >> populate_dim_building >> update_dim_building_labels >> link_dvf_to_building >> end

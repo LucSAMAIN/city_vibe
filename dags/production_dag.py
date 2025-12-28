@@ -83,7 +83,143 @@ def _create_dim_date():
 
     cur.close()
     conn.close()
+    
+## ------------------------------------------------------------------------------
+## Revenue Dimension functions
+## ------------------------------------------------------------------------------
 
+def _calculate_revenue_metrics_psycopg2():
+    import pandas as pd
+    import psycopg2
+    import numpy as np
+    # 1. GET CREDENTIALS & CONNECT
+    # ---------------------------------------------------------
+    # Retrieve connection info safely from Airflow
+    
+    conn = psycopg2.connect(
+        host="postgres-instance",
+        port=5432,
+        database="airflow",
+        user="airflow",
+        password="airflow"
+    )
+    
+    try:
+        # 2. READ DATA
+        # ---------------------------------------------------------
+        read_sql = """
+            SELECT 
+                revenue_id, 
+                tax_household_number, 
+                household_number, 
+                reference_tax_revenue, 
+                total_net_tax 
+            FROM DIM_REVENUE
+        """
+        
+        # pandas.read_sql works directly with a psycopg2 connection
+        df = pd.read_sql(read_sql, conn)
+
+        # 3. TRANSFORM (Vectorized Pandas Logic)
+        # ---------------------------------------------------------
+        # (Same logic as before, just ensuring types are Python-native for psycopg2)
+        df['household_number'] = df['household_number'].replace(0, np.nan)
+
+        df['tax_household_percentage'] = df['tax_household_number'] / df['household_number']
+        df['mean_revenue_per_household'] = df['reference_tax_revenue'] / df['household_number']
+        df['mean_tax_per_household'] = df['total_net_tax'] / df['household_number']
+
+        # Calculate Stats
+        stats = {
+            'min_tax_pct': df['tax_household_percentage'].min(),
+            'max_tax_pct': df['tax_household_percentage'].max(),
+            'min_rev': df['mean_revenue_per_household'].min(),
+            'max_rev': df['mean_revenue_per_household'].max(),
+            'min_tax': df['mean_tax_per_household'].min(),
+            'max_tax': df['mean_tax_per_household'].max()
+        }
+
+        def normalize(series, min_val, max_val):
+            denominator = max_val - min_val
+            if denominator == 0: return 0
+            return (series - min_val) / denominator
+
+        # Calculate Score
+        rev_score = normalize(df['mean_revenue_per_household'], stats['min_rev'], stats['max_rev'])
+        pct_score = normalize(df['tax_household_percentage'], stats['min_tax_pct'], stats['max_tax_pct'])
+        tax_score = normalize(df['mean_tax_per_household'], stats['min_tax'], stats['max_tax'])
+
+        df['score'] = (0.5 * rev_score) + (0.3 * pct_score) + (0.2 * tax_score)
+
+        # Calculate Class
+        df['class'] = pd.cut(
+            df['score'], 
+            bins=[-np.inf, 0.2, 0.4, 0.6, 0.8, np.inf], 
+            labels=['E', 'D', 'C', 'B', 'A'],
+            right=False
+        )
+        
+        # CLEANUP: Handle NaNs before inserting (Postgres hates NaN in float columns)
+        # Replace NaN with None so psycopg2 converts it to SQL NULL
+        update_df = df[[
+            'revenue_id', 
+            'tax_household_percentage', 
+            'mean_revenue_per_household', 
+            'mean_tax_per_household', 
+            'score', 
+            'class'
+        ]].where(pd.notnull(df), None)
+
+        # 4. BULK WRITE (Staging Strategy)
+        # ---------------------------------------------------------
+        with conn.cursor() as cur:
+            # A. Create Temp Table
+            cur.execute("""
+                CREATE TEMP TABLE dim_revenue_staging (
+                    revenue_id INT,
+                    tax_household_percentage FLOAT,
+                    mean_revenue_per_household FLOAT,
+                    mean_tax_per_household FLOAT,
+                    score FLOAT,
+                    class VARCHAR(10)
+                ) ON COMMIT DROP;
+            """)
+            
+            # B. Prepare data for execute_values
+            # Convert DataFrame to a list of tuples
+            data_tuples = list(update_df.itertuples(index=False, name=None))
+            
+            # C. Fast Bulk Insert
+            insert_query = """
+                INSERT INTO dim_revenue_staging 
+                (revenue_id, tax_household_percentage, mean_revenue_per_household, mean_tax_per_household, score, class) 
+                VALUES %s
+            """
+            psycopg2.extras.execute_values(cur, insert_query, data_tuples)
+            
+            # D. The Bulk Update Join
+            update_query = """
+                UPDATE DIM_REVENUE as main
+                SET 
+                    tax_household_percentage = stg.tax_household_percentage,
+                    mean_revenue_per_household = stg.mean_revenue_per_household,
+                    mean_tax_per_household = stg.mean_tax_per_household,
+                    score = stg.score,
+                    class = stg.class
+                FROM dim_revenue_staging as stg
+                WHERE main.revenue_id = stg.revenue_id;
+            """
+            cur.execute(update_query)
+            
+            # Commit the transaction
+            conn.commit()
+            print(f"Updated {len(data_tuples)} rows successfully.")
+
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 ## Configuration
 
@@ -401,6 +537,135 @@ with DAG(
     start >> delete_dim_building_table >> create_dim_building_metrics >> populate_dim_building >> create_dim_building_lookup_index >> drop_label_columns_if_exist >> create_label_columns >> update_dim_building_labels >> drop_building_id_from_dvf >> create_building_id_column_in_dvf >> link_dvf_to_building >> create_index_on_dvf_building_id >> end
 
 with DAG(
+    dag_id="production-Dim-revenue",
+    description="Staging to production data pipeline. Moves cleaned data from staging postgres to production postgres and computes metrics.",
+    start_date=datetime(2024, 1, 1),
+    schedule="@monthly",
+    catchup=False,
+    default_args=default_args,
+    tags=["city_vibe", "demo"],
+) as dag:
+
+    start = EmptyOperator(
+        task_id="start",
+        dag=dag,
+    )
+
+    delete_dim_revenue_table = SQLExecuteQueryOperator(
+        task_id="delete_dim_revenue_table",
+        conn_id="postgres_instance",
+        sql="""
+            DROP TABLE IF EXISTS DIM_REVENUE; 
+        """,
+        dag=dag,
+    )
+
+    create_dim_revenue_table = SQLExecuteQueryOperator(
+        task_id="create_dim_revenue_table",
+        conn_id="postgres_instance",
+        sql="""
+            CREATE TABLE IF NOT EXISTS DIM_REVENUE (
+                revenue_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                join_key TEXT,
+                reference_tax_revenue FLOAT,
+                tax_household_number INTEGER,
+                household_number INTEGER,
+                total_net_tax FLOAT
+            );
+        """,
+        dag=dag,
+    )
+
+    populate_dim_revenue = SQLExecuteQueryOperator(
+        task_id="populate_dim_revenue",
+        conn_id="postgres_instance",
+        sql="""
+            INSERT INTO DIM_REVENUE (join_key,reference_tax_revenue, tax_household_number, household_number, total_net_tax)
+            SELECT 
+                join_key,
+                revenu_fiscal_de_reference_des_foyers_fiscaux,
+                nombre_de_foyers_fiscaux_imposes,
+                nombre_de_foyers_fiscaux,
+                impot_net_total
+            FROM REVENUE_STAGING
+            WHERE revenu_fiscal_de_reference_des_foyers_fiscaux IS NOT NULL;
+        """,
+        dag=dag,
+    )
+    
+    create_dim_metrics = SQLExecuteQueryOperator(
+        task_id="create_dim_metrics",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DIM_REVENUE ADD COLUMN IF NOT EXISTS tax_household_percentage FLOAT;
+            ALTER TABLE DIM_REVENUE ADD COLUMN IF NOT EXISTS mean_revenue_per_household FLOAT;
+            ALTER TABLE DIM_REVENUE ADD COLUMN IF NOT EXISTS mean_tax_per_household FLOAT;
+            ALTER TABLE DIM_REVENUE ADD COLUMN IF NOT EXISTS score FLOAT;
+            ALTER TABLE DIM_REVENUE ADD COLUMN IF NOT EXISTS class TEXT;
+        """,
+        dag=dag,
+    )
+
+    update_dim_revenue_metrics = PythonOperator(
+        task_id="update_dim_revenue_metrics",
+        python_callable=_calculate_revenue_metrics_psycopg2, 
+        dag=dag,
+    )
+
+    create_dim_revenue_lookup_index = SQLExecuteQueryOperator(
+        task_id="create_dim_revenue_lookup_index",
+        conn_id="postgres_instance",
+        sql="""
+            CREATE INDEX IF NOT EXISTS idx_dim_revenue_reference_tax_revenue ON DIM_REVENUE(join_key);
+        """,
+        dag=dag,
+    )
+
+    add_revenue_id_column_to_dvf = SQLExecuteQueryOperator(
+        task_id="add_revenue_id_column_to_dvf",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING DROP COLUMN IF EXISTS revenue_id;
+            ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS revenue_id BIGINT;
+        """,
+        dag=dag,
+    )
+
+    link_revenue_to_dvf = SQLExecuteQueryOperator(
+        task_id="link_revenue_to_dvf",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE DVF_STAGING dvf
+            SET revenue_id = subquery.revenue_id
+            FROM (
+                SELECT 
+                    dvf.id_mutation,
+                    dim.revenue_id
+                FROM DVF_STAGING dvf
+                LEFT JOIN LATERAL (
+                    SELECT revenue_id
+                    FROM DIM_REVENUE dim
+                    WHERE 
+                        dim.join_key = dvf.revenue_join_key
+                    LIMIT 1
+                ) dim ON TRUE
+                WHERE dim.revenue_id IS NOT NULL
+            ) AS subquery
+            WHERE dvf.id_mutation = subquery.id_mutation;
+        """,
+        dag=dag,
+    )
+
+    end = EmptyOperator(
+        task_id="end",
+        dag=dag,
+        trigger_rule="none_failed",
+    )
+
+    # Task dependencies
+    start >> delete_dim_revenue_table >> create_dim_revenue_table >> populate_dim_revenue >> create_dim_metrics >> update_dim_revenue_metrics >> create_dim_revenue_lookup_index >> link_revenue_to_dvf >> end
+
+with DAG(
     dag_id="production-Fact-table",
     description="Staging to production data pipeline. Moves cleaned data from staging postgres to production postgres and computes metrics.",
     start_date=datetime(2024, 1, 1),
@@ -452,7 +717,7 @@ with DAG(
             TRUNCATE TABLE FACT_TABLE;
 
             INSERT INTO FACT_TABLE (
-                id_transaction, date_id, -- revenue_id, 
+                id_transaction, date_id, revenue_id, 
                 building_id,
                 transaction_value, land_surface, built_surface, price_m2, transaction_type
             )
@@ -462,7 +727,7 @@ with DAG(
                 COALESCE(date_id, '-1'),
 
                 -- 2. REVENUE_ID : Si la clé de jointure est nulle -> '-1'
-                -- COALESCE(revenue_id, '-1'),
+                COALESCE(revenue_id, '-1'),
                 
                 -- 3. BUILDING_ID : Si le mapping DPE n'a pas marché -> '-1'
                 COALESCE(building_id, '-1'),

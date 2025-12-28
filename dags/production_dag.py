@@ -663,7 +663,7 @@ with DAG(
     )
 
     # Task dependencies
-    start >> delete_dim_revenue_table >> create_dim_revenue_table >> populate_dim_revenue >> create_dim_metrics >> update_dim_revenue_metrics >> create_dim_revenue_lookup_index >> link_revenue_to_dvf >> end
+    start >> delete_dim_revenue_table >> create_dim_revenue_table >> populate_dim_revenue >> create_dim_metrics >> update_dim_revenue_metrics >> create_dim_revenue_lookup_index >> add_revenue_id_column_to_dvf >> link_revenue_to_dvf >> end
 
 with DAG(
     dag_id="production-Fact-table",

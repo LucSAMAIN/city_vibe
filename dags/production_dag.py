@@ -29,14 +29,14 @@ def _create_dim_date():
         
         CREATE TABLE DIM_DATE (
             date_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            full_date DATE NOT NULL UNIQUE,
-            year INTEGER NOT NULL,
-            month INTEGER NOT NULL,             -- 1-12
-            month_name TEXT NOT NULL,           -- Janvier, Février, etc.
-            day INTEGER NOT NULL,               -- 1-31
-            day_of_week INTEGER NOT NULL,       -- 1=Lundi, 7=Dimanche
-            day_name TEXT NOT NULL,             -- Lundi, Mardi, etc.
-            is_weekend BOOLEAN NOT NULL
+            full_date DATE UNIQUE,
+            year INTEGER,
+            month INTEGER,             -- 1-12
+            month_name TEXT,           -- Janvier, Février, etc.
+            day INTEGER,               -- 1-31
+            day_of_week INTEGER,       -- 1=Lundi, 7=Dimanche
+            day_name TEXT,             -- Lundi, Mardi, etc.
+            is_weekend BOOLEAN
         );
     """)
     
@@ -58,6 +58,22 @@ def _create_dim_date():
         FROM DVF_STAGING
         WHERE date_mutation IS NOT NULL
         ORDER BY full_date;
+    """)
+
+    cur.execute("""
+        INSERT INTO DIM_DATE (
+            date_id, full_date, year, month, month_name, day, day_of_week, day_name, is_weekend
+        ) OVERRIDING SYSTEM VALUE VALUES (
+            '-1'::BIGINT,  -- date_id
+            NULL,   -- full_date
+            NULL,   -- year
+            NULL,   -- month
+            NULL,   -- month_name
+            NULL,   -- day
+            NULL,   -- day_of_week
+            NULL,   -- day_name
+            NULL    -- is_weekend
+        );                
     """)
     
     inserted = cur.rowcount
@@ -102,15 +118,67 @@ with DAG(
         dag=dag,
     )
 
+    drop_date_id_from_dvf = SQLExecuteQueryOperator(
+        task_id="drop_date_id_from_dvf",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING DROP COLUMN IF EXISTS date_id;
+        """,
+        dag=dag,
+    )
+
+    create_date_id_column_in_dvf = SQLExecuteQueryOperator(
+        task_id="create_date_id_column_in_dvf",
+        conn_id="postgres_instance",
+        sql="""
+            ALTER TABLE DVF_STAGING ADD COLUMN IF NOT EXISTS date_id BIGINT;
+        """,
+        dag=dag,
+    )
+
+    create_index = SQLExecuteQueryOperator(
+        task_id="create_index",
+        conn_id="postgres_instance",
+        sql="""
+            CREATE INDEX IF NOT EXISTS idx_dvf_full_date ON DIM_DATE(full_date);
+        """,
+        dag=dag,
+    )
+
+    link_dvf_to_date = SQLExecuteQueryOperator(
+        task_id="link_dvf_to_date",
+        conn_id="postgres_instance",
+        sql="""
+            UPDATE DVF_STAGING dvf
+            SET date_id = subquery.date_id
+            FROM (
+                SELECT 
+                    dvf.id_mutation,
+                    dim.date_id
+                FROM DVF_STAGING dvf
+                LEFT JOIN LATERAL (
+                    SELECT date_id
+                    FROM DIM_DATE dim
+                    WHERE 
+                        dim.full_date = dvf.date_mutation
+                    LIMIT 1
+                ) dim ON TRUE
+                WHERE dim.date_id IS NOT NULL
+            ) AS subquery
+            WHERE dvf.id_mutation = subquery.id_mutation;
+        """,
+        dag=dag,
+    )
+
     end = EmptyOperator(
         task_id="end",
         dag=dag,
-        trigger_rule="all_done",
+        trigger_rule="none_failed",
     )
 
     # Task dependencies
 
-    start >> dvf_create_dim_date >> end
+    start >> dvf_create_dim_date >> drop_date_id_from_dvf >> create_date_id_column_in_dvf >> create_index >> link_dvf_to_date >> end
 
     
 
@@ -170,7 +238,7 @@ with DAG(
             )
             SELECT              
                 address_key,
-                DATE_TRUNC('year', date_etablissement_dpe)::DATE as date_reference,
+                DATE_TRUNC('year', date_etablissement_dpe) as date_reference,
                 
                 MAX(code_insee_ban),
                 MAX(nom_commune_ban),                
@@ -193,7 +261,7 @@ with DAG(
             INSERT INTO DIM_BUILDING (
                 building_id, address_key, date_reference, insee_code, city_name, 
                 postal_code, department_num, street_number, gas_emissions, energy_consumption, nb_logements_agg
-            ) VALUES (
+            ) OVERRIDING SYSTEM VALUE VALUES (
                 '-1',   -- building_id
                 NULL,   -- address_key
                 NULL,   -- date_reference
@@ -303,7 +371,7 @@ with DAG(
                     WHERE 
                         dim.address_key = dvf.address_key
                         -- On cherche le DPE fait AVANT ou PENDANT la vente
-                        AND dim.date_reference <= dvf.date_mutation
+                        AND dim.date_reference <= DATE_TRUNC('year', dvf.date_mutation)
                     ORDER BY dim.date_reference DESC
                     LIMIT 1
                 ) dim ON TRUE
@@ -326,7 +394,7 @@ with DAG(
     end = EmptyOperator(
         task_id="end",
         dag=dag,
-        trigger_rule="all_done",
+        trigger_rule="none_failed",
     )
 
     # Task dependencies
@@ -363,9 +431,9 @@ with DAG(
             CREATE TABLE IF NOT EXISTS FACT_TABLE (
                 fact_id SERIAL PRIMARY KEY,
                 id_transaction TEXT,
-                date_id TEXT,       -- FK vers DIM_DATE (Format YYYYMMDD)
-                revenue_id TEXT,    -- FK vers DIM_REVENUE (Key composite)
-                building_id TEXT,   -- FK vers DIM_BUILDING (MD5)
+                date_id BIGINT,       -- FK vers DIM_DATE (Format YYYYMMDD)
+                revenue_id BIGINT,    -- FK vers DIM_REVENUE (Key composite)
+                building_id BIGINT,   -- FK vers DIM_BUILDING (MD5)
                 
                 transaction_value FLOAT,
                 land_surface FLOAT,
@@ -384,16 +452,17 @@ with DAG(
             TRUNCATE TABLE FACT_TABLE;
 
             INSERT INTO FACT_TABLE (
-                id_transaction, date_id, revenue_id, building_id,
+                id_transaction, date_id, -- revenue_id, 
+                building_id,
                 transaction_value, land_surface, built_surface, price_m2, transaction_type
             )
             SELECT
                 id_mutation,
                 -- 1. DATE_ID : Si la date est nulle -> '-1'
-                COALESCE(TO_CHAR(date_mutation, 'YYYYMMDD'), '-1'),
+                COALESCE(date_id, '-1'),
 
                 -- 2. REVENUE_ID : Si la clé de jointure est nulle -> '-1'
-                COALESCE(revenue_join_key, '-1'),
+                -- COALESCE(revenue_id, '-1'),
                 
                 -- 3. BUILDING_ID : Si le mapping DPE n'a pas marché -> '-1'
                 COALESCE(building_id, '-1'),
@@ -413,6 +482,7 @@ with DAG(
                 nature_mutation
 
             FROM DVF_STAGING
+
             -- On peut filtrer ici si tu veux exclure les transactions sans valeur
             WHERE id_mutation IS NOT NULL;
 
@@ -427,7 +497,7 @@ with DAG(
     end = EmptyOperator(
         task_id="end",
         dag=dag,
-        trigger_rule="all_done",
+        trigger_rule="none_failed",
     )
 
     # Task dependencies

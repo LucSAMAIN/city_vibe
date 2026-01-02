@@ -1,7 +1,9 @@
+from collections import defaultdict
 import datetime
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine
+from dateutil.relativedelta import relativedelta
 
 # --- 1. Database Configuration ---
 DB_USER = 'airflow'
@@ -41,7 +43,6 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
     Filters out rows where this specific metric is NULL.
     """
     engine = get_engine()
-    start_date, end_date = date_range
 
     # We use an f-string for the column name (metric_column).
     # NOTE: Only use f-strings for internal identifiers (table/column names). 
@@ -63,17 +64,20 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
         INNER JOIN DIM_BUILDING b ON f.building_id = b.building_id
         INNER JOIN DIM_REVENUE r ON f.revenue_id = r.revenue_id
     WHERE 
-        d.full_date >= %(start_date)s
-        AND d.full_date <= %(end_date)s
+        1=1
         AND f.{metric_column} IS NOT NULL     -- Dynamic Filter
     """
-    
-    params = {
-        'start_date': start_date,
-        'end_date': end_date
-    }
+    params= defaultdict(str)
 
     # Dynamic Filtering for Dimensions
+    if date_range is not None:
+        # Check if user selected both start and end dates (st.date_input returns a tuple)
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            query += " AND d.full_date >= %(start_date)s AND d.full_date <= %(end_date)s"
+            params['start_date'] = start_date
+            params['end_date'] = end_date
+
     if gas_label != "All":
         query += " AND b.gas_emissions_label = %(gas_label)s"
         params['gas_label'] = gas_label
@@ -163,7 +167,24 @@ selected_regions = st.sidebar.multiselect("Select Department(s)", options=all_re
 all_cities = df_options['city_name'].dropna().unique().tolist()
 selected_cities = st.sidebar.multiselect("Select City(s)", options=all_cities)
 
-d = st.date_input("Select date range", (datetime.date(2023, 1, 1), datetime.date(2024, 1, 1)))
+date_mode = st.selectbox(
+    "Choose a Time Period",
+    options=["Custom Range", "All Time (Forever)"],
+    index=1  # Default to Custom
+)
+
+today = datetime.date.today()
+
+if date_mode == "All Time (Forever)":
+    # Pass None to trigger the "WHERE 1=1" logic (No date filter)
+    d = None
+    st.caption("Showing all data available in the database.")
+else: # "Custom Range"
+    d = st.date_input(
+        "Select specific dates",
+        (datetime.date(2023, 1, 1), datetime.date(2024, 1, 1)),
+        format="MM.DD.YYYY"
+    )
 gas_label = st.sidebar.selectbox("Gas Emission", ["All", "A", "B", "C", "D", "E", "F", "G"])
 energy_label = st.sidebar.selectbox("Energy Consumption", ["All", "A", "B", "C", "D", "E", "F", "G"])
 revenue_class = st.sidebar.selectbox("Revenue Class", ["All", "A", "B", "C", "D", "E"])

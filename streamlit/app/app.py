@@ -56,7 +56,7 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
         b.gas_emissions_label,
         b.energy_consumption_label,
         r.class,
-        AVG(f.{metric_column}) as mean_value,  -- Dynamic Column
+        SUM(f.{metric_column}) as total_value,  -- Dynamic Column
         COUNT(*) as valid_count               -- Count of non-null rows for this metric
     FROM 
         FACT_TABLE f
@@ -117,16 +117,24 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
         
     return df
 
-def analysis(c1, c2, c3, c4, df):
+def analysis(c1, c2, c3, c4, df, gas_label="All", energy_label="All", revenue_class="All"):
+
+    def get_weighted_avg(sub_df, group_col):
+        # 1. Group by the specific column (e.g., 'gas_emissions_label')
+        grouped = sub_df.groupby(group_col)[['total_value', 'valid_count']].sum()
+        
+        # 2. Calculate average: Sum of Values / Sum of Counts
+        return grouped['total_value'] / grouped['valid_count']
+    
     with c1:
         st.subheader("Over Time")
-        chart_data = df.groupby('full_date')['mean_value'].mean()
+        chart_data = get_weighted_avg(df, 'full_date')
         st.line_chart(chart_data)
 
     with c2:
         st.subheader("By Gas Label")
         if gas_label == "All":
-            bar_data = df.groupby('gas_emissions_label')['mean_value'].mean()
+            bar_data = get_weighted_avg(df, 'gas_emissions_label')
             st.bar_chart(bar_data)
         else:
             st.info("Select 'All' to see comparison.")
@@ -134,7 +142,7 @@ def analysis(c1, c2, c3, c4, df):
     with c3:
         st.subheader("By Energy Label")
         if energy_label == "All":
-            bar_data = df.groupby('energy_consumption_label')['mean_value'].mean()
+            bar_data = get_weighted_avg(df, 'energy_consumption_label')
             st.bar_chart(bar_data)
         else:
             st.info("Select 'All' to see comparison.")
@@ -142,7 +150,7 @@ def analysis(c1, c2, c3, c4, df):
     with c4:
         st.subheader("By Revenue Class")
         if revenue_class == "All":
-            bar_data = df.groupby('class')['mean_value'].mean()
+            bar_data = get_weighted_avg(df, 'class')
             st.bar_chart(bar_data)
         else:
             st.info("Select 'All' to see comparison.")
@@ -214,13 +222,16 @@ try:
             if df.empty:
                 col.metric(title, "No Data")
             else:
-                # Calculate weighted average or simple sum depending on your business logic
-                # (Assuming simple sum of averages based on your previous code, though weighted is better)
-                avg_val = df['mean_value'].mean() 
-                count_val = df['valid_count'].sum()
+                total_sum = df['total_value'].sum() 
+                total_count = df['valid_count'].sum()
                 
-                col.metric(f"{title}", f"{avg_val:{format_str}}")
-                col.caption(f"Based on {count_val:,} records")
+                if total_count == 0:
+                    real_avg = 0
+                else:
+                    real_avg = total_sum / total_count
+                
+                col.metric(f"{title}", f"{real_avg:{format_str}}")
+                col.caption(f"Based on {total_count:,} records")
 
         # Display Metrics with their specific counts
         display_metric(cols[0], "Avg Transaction", df_trans, ",.2f")
@@ -269,33 +280,38 @@ try:
 
         st.subheader("Transaction Value Analysis")
         c1, c2, c3, c4 = st.columns(4)
-        analysis(c1, c2, c3, c4, df_trans)
+        analysis(c1, c2, c3, c4, df_trans, gas_label, energy_label, revenue_class)
 
         st.markdown("---")
 
         st.subheader("Price per m² Analysis")
         c1, c2, c3, c4 = st.columns(4)
-        analysis(c1, c2, c3, c4, df_price)
+        analysis(c1, c2, c3, c4, df_price, gas_label, energy_label, revenue_class)
 
         st.markdown("---") 
 
         st.subheader("Land Surface Analysis")
         c1, c2, c3, c4 = st.columns(4)
-        analysis(c1, c2, c3, c4, df_land)  
+        analysis(c1, c2, c3, c4, df_land, gas_label, energy_label, revenue_class)
 
         st.markdown("---")
 
         st.subheader("Built Surface Analysis")
         c1, c2, c3, c4 = st.columns(4)
-        analysis(c1, c2, c3, c4, df_built)  
+        analysis(c1, c2, c3, c4, df_built, gas_label, energy_label, revenue_class)  
         
 
-        # Optional: Tabs to view raw data for each metric
+        # Tabs to view raw data for each metric
         st.subheader("Raw Data Inspector")
         tab1, tab2, tab3, tab4 = st.tabs(["Transactions", "Price m²", "Land", "Built"])
+
+        df_trans['avg_transaction_value'] = df_trans['total_value'] / df_trans['valid_count']
         tab1.dataframe(df_trans)
+        df_price['avg_price_m2'] = df_price['total_value'] / df_price['valid_count']
         tab2.dataframe(df_price)
+        df_land['avg_land_surface'] = df_land['total_value'] / df_land['valid_count']
         tab3.dataframe(df_land)
+        df_built['avg_built_surface'] = df_built['total_value'] / df_built['valid_count']
         tab4.dataframe(df_built)
 
 except Exception as e:

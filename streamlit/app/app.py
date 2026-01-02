@@ -35,7 +35,7 @@ def get_filter_options():
     return df
 
 @st.cache_data(ttl=600)
-def load_metric_data(metric_column, date_range, gas_label, energy_label, regions, cities, postal_codes):
+def load_metric_data(metric_column, date_range, gas_label, energy_label, regions, cities, postal_codes, revenue_class):
     """
     Generic function to load data for a SINGLE metric.
     Filters out rows where this specific metric is NULL.
@@ -54,12 +54,14 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
         d.full_date,
         b.gas_emissions_label,
         b.energy_consumption_label,
+        r.class,
         AVG(f.{metric_column}) as mean_value,  -- Dynamic Column
         COUNT(*) as valid_count               -- Count of non-null rows for this metric
     FROM 
         FACT_TABLE f
         INNER JOIN DIM_DATE d ON f.date_id = d.date_id
         INNER JOIN DIM_BUILDING b ON f.building_id = b.building_id
+        INNER JOIN DIM_REVENUE r ON f.revenue_id = r.revenue_id
     WHERE 
         d.full_date >= %(start_date)s
         AND d.full_date <= %(end_date)s
@@ -91,12 +93,17 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
     if postal_codes:
         query += " AND b.postal_code IN %(postal_codes)s"
         params['postal_codes'] = tuple(postal_codes)
+    
+    if revenue_class != "All":
+        query += " AND r.class = %(revenue_class)s"
+        params['revenue_class'] = revenue_class
 
     # Grouping
     query += """
     GROUP BY 
         d.year, d.month, d.day, d.full_date,
-        b.gas_emissions_label, b.energy_consumption_label
+        b.gas_emissions_label, b.energy_consumption_label,
+        r.class
     ORDER BY 
         d.year ASC, d.month ASC, d.day ASC
     """
@@ -105,6 +112,37 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
         df = pd.read_sql(query, conn, params=params)
         
     return df
+
+def analysis(c1, c2, c3, c4, df):
+    with c1:
+        st.subheader("Over Time")
+        chart_data = df.groupby('full_date')['mean_value'].mean()
+        st.line_chart(chart_data)
+
+    with c2:
+        st.subheader("By Gas Label")
+        if gas_label == "All":
+            bar_data = df.groupby('gas_emissions_label')['mean_value'].mean()
+            st.bar_chart(bar_data)
+        else:
+            st.info("Select 'All' to see comparison.")
+
+    with c3:
+        st.subheader("By Energy Label")
+        if energy_label == "All":
+            bar_data = df.groupby('energy_consumption_label')['mean_value'].mean()
+            st.bar_chart(bar_data)
+        else:
+            st.info("Select 'All' to see comparison.")
+
+    with c4:
+        st.subheader("By Revenue Class")
+        if revenue_class == "All":
+            bar_data = df.groupby('class')['mean_value'].mean()
+            st.bar_chart(bar_data)
+        else:
+            st.info("Select 'All' to see comparison.")
+
 
 # --- 3. Streamlit Layout ---
 
@@ -128,6 +166,7 @@ selected_cities = st.sidebar.multiselect("Select City(s)", options=all_cities)
 d = st.date_input("Select date range", (datetime.date(2023, 1, 1), datetime.date(2024, 1, 1)))
 gas_label = st.sidebar.selectbox("Gas Emission", ["All", "A", "B", "C", "D", "E", "F", "G"])
 energy_label = st.sidebar.selectbox("Energy Consumption", ["All", "A", "B", "C", "D", "E", "F", "G"])
+revenue_class = st.sidebar.selectbox("Revenue Class", ["All", "A", "B", "C", "D", "E"])
 
 try:
     # --- 4. Loading Data Separately ---
@@ -135,10 +174,10 @@ try:
     # even if 'Price m2' only has 400 rows.
     
     with st.spinner("Loading metrics..."):
-        df_trans = load_metric_data('transaction_value', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
-        df_price = load_metric_data('price_m2', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
-        df_land  = load_metric_data('land_surface', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
-        df_built = load_metric_data('built_surface', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
+        df_trans = load_metric_data('transaction_value', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips, revenue_class)
+        df_price = load_metric_data('price_m2', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips, revenue_class)
+        df_land  = load_metric_data('land_surface', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips, revenue_class)
+        df_built = load_metric_data('built_surface', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips, revenue_class)
 
     # Check if primary data exists
     if df_trans.empty:
@@ -172,17 +211,17 @@ try:
 
         # --- 6. Visualizations ---
         # We use df_trans for the main charts as they focus on Transaction Value
-        c1, c2, c3 = st.columns(3)
-
+        st.header("Count Analysis")
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.subheader("Transaction Value Over Time")
-            chart_data = df_trans.groupby('full_date')['mean_value'].sum()
+            st.subheader("Over Time")
+            chart_data = df_trans.groupby('full_date')['valid_count'].sum()
             st.line_chart(chart_data)
 
         with c2:
             st.subheader("By Gas Label")
-            if gas_label == "All":
-                bar_data = df_trans.groupby('gas_emissions_label')['mean_value'].sum()
+            if gas_label == "All": 
+                bar_data = df_trans.groupby('gas_emissions_label')['valid_count'].sum()
                 st.bar_chart(bar_data)
             else:
                 st.info("Select 'All' to see comparison.")
@@ -190,10 +229,45 @@ try:
         with c3:
             st.subheader("By Energy Label")
             if energy_label == "All":
-                bar_data = df_trans.groupby('energy_consumption_label')['mean_value'].sum()
+                bar_data = df_trans.groupby('energy_consumption_label')['valid_count'].sum()
                 st.bar_chart(bar_data)
             else:
                 st.info("Select 'All' to see comparison.")
+        
+        with c4:
+            st.subheader("By Revenue Class")
+            if revenue_class == "All":
+                bar_data = df_trans.groupby('class')['valid_count'].sum()
+                st.bar_chart(bar_data)
+            else:
+                st.info("Select 'All' to see comparison.")
+        
+        st.markdown("---")
+
+        st.header("Value Analysis")
+
+        st.subheader("Transaction Value Analysis")
+        c1, c2, c3, c4 = st.columns(4)
+        analysis(c1, c2, c3, c4, df_trans)
+
+        st.markdown("---")
+
+        st.subheader("Price per m² Analysis")
+        c1, c2, c3, c4 = st.columns(4)
+        analysis(c1, c2, c3, c4, df_price)
+
+        st.markdown("---") 
+
+        st.subheader("Land Surface Analysis")
+        c1, c2, c3, c4 = st.columns(4)
+        analysis(c1, c2, c3, c4, df_land)  
+
+        st.markdown("---")
+
+        st.subheader("Built Surface Analysis")
+        c1, c2, c3, c4 = st.columns(4)
+        analysis(c1, c2, c3, c4, df_built)  
+        
 
         # Optional: Tabs to view raw data for each metric
         st.subheader("Raw Data Inspector")

@@ -16,6 +16,7 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
+OFFLINE_MODE = True
 
 ## Constant definitions
 
@@ -29,8 +30,8 @@ REVENUE_IDS = [
 
 DVF_URL = "https://static.data.gouv.fr/resources/demandes-de-valeurs-foncieres-geolocalisees/20251105-140205/dvf.csv.gz"
 
-OUTPUT_DPE_PATH = "/opt/airflow/data/dpe"
-OUTPUT_DPE_FILE = "dpe_03_raw.ndjson"
+OUTPUT_DPE_PATH = "/opt/airflow/data/offline-data/dpe" if OFFLINE_MODE else "/opt/airflow/data/dpe"
+OUTPUT_DPE_FILE = "dpe_subset.ndjson" if OFFLINE_MODE else "dpe_03_raw.ndjson"
 
 ## Helper functions
 
@@ -67,6 +68,11 @@ def _revenue_hash_redis(**context):
     """
     import redis
     import os
+
+    if OFFLINE_MODE:
+        logger.info("OFFLINE_MODE detected. Skipping download/hash check. Using local subsets.")
+        # On saute le téléchargement et l'extraction pour aller directement à l'insertion
+        return "revenue_to_mongo"
 
     # Connect to Redis
     redis_client = redis.Redis(
@@ -166,7 +172,7 @@ def _extract_revenue_to_mongo():
         else:
             skipfooter = 6
 
-        file_path = f"/opt/airflow/data/revenue/revenue_{year}.xlsx"
+        file_path = f"/opt/airflow/data/offline-data/revenue/revenue_{year}.xlsx" if OFFLINE_MODE else f"/opt/airflow/data/revenue/revenue_{year}.xlsx"
 
         revenue_first_part = pd.read_excel(file_path, header=0, usecols=usecols[0], skiprows=skip, skipfooter=skipfooter)[1:].reset_index(drop=True)
         revenue_second_part = pd.read_excel(file_path, header=1, usecols=usecols[1], skiprows=skip, skipfooter=skipfooter)
@@ -219,6 +225,10 @@ def _unzip_dvf():
 
 def _cleanup_dvf():
     import os
+
+    if OFFLINE_MODE:
+        return
+
     if os.path.exists("/opt/airflow/data/dvf/dvf.csv.gz"):
         os.remove("/opt/airflow/data/dvf/dvf.csv.gz")
         logger.info("Cleaned up dvf.csv.gz")
@@ -233,6 +243,10 @@ def _dvf_hash_redis():
     """
     import redis
     import os
+
+    if OFFLINE_MODE:
+        logger.info("OFFLINE_MODE detected. Skipping download. Using local subset.")
+        return "dvf_to_mongo"
 
     # Connect to Redis
     redis_client = redis.Redis(
@@ -314,7 +328,7 @@ def _dvf_to_mongo():
 
     # Read the DVF CSV file and insert into MongoDB
     logger.info("Inserting DVF data into MongoDB (AURA only)...")
-    file_path = "/opt/airflow/data/dvf/dvf.csv"
+    file_path = "/opt/airflow/data/offline-data/dvf/dvf_subset.csv" if OFFLINE_MODE else "/opt/airflow/data/dvf/dvf.csv"
     # Cant do this because of memory issues, so we do it in chunks
     chunk_size = 50000
     df_iterator = pd.read_csv(file_path, 
@@ -356,6 +370,10 @@ def _download_dpe():
     import requests
     import json
     import time
+
+    if OFFLINE_MODE:
+        logger.info("OFFLINE_MODE: Skipping DPE download. Assuming 'dpe_subset.ndjson' exists.")
+        return
 
     #fiel dpe : numero_dpe, date_etablissement_dpe, etiquette_dpe, etiquette_ges, numero_voie_ban, nom_rue_ban, nom_commune_ban, code_postal_ban, code_insee_ban
     # ,identifiant_ban
@@ -424,6 +442,9 @@ def _dpe_hash_redis():
     """
     import redis
     import os
+
+    if OFFLINE_MODE:
+        return "dpe_to_mongo"
 
     # Connect to Redis
     redis_client = redis.Redis(
@@ -546,6 +567,7 @@ with DAG(
     revenue_to_mongo = PythonOperator(
         task_id="revenue_to_mongo",
         python_callable=_extract_revenue_to_mongo,
+        trigger_rule="none_failed_min_one_success",
         dag=dag,
     )
 
@@ -553,7 +575,7 @@ with DAG(
     # Define task dependencies
 
     # REVENUE workflow
-    start >> revenue_hash_redis >> [download_revenue, end] 
+    start >> revenue_hash_redis >> [download_revenue, revenue_to_mongo, end] 
     download_revenue >> extract_revenue >> revenue_to_mongo >> cleanup_revenue >> end
 
 
@@ -606,13 +628,14 @@ with DAG(
     dvf_to_mongo = PythonOperator(
         task_id="dvf_to_mongo",
         python_callable=_dvf_to_mongo,
+        trigger_rule="none_failed_min_one_success",
         dag=dag,
     )
 
     # Define task dependencies
 
     # DVF workflow
-    start >> dvf_hash_redis >> [download_dvf, end]
+    start >> dvf_hash_redis >> [download_dvf, dvf_to_mongo, end]
     download_dvf >> unzip_dvf >> dvf_to_mongo >> cleanup_dvf >> end
 
 with DAG(

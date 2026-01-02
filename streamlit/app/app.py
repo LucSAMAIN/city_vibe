@@ -1,0 +1,207 @@
+import datetime
+import streamlit as st
+import pandas as pd
+from sqlalchemy import create_engine
+
+# --- 1. Database Configuration ---
+DB_USER = 'airflow'
+DB_PASS = 'airflow'
+DB_HOST = 'postgres-instance'
+DB_PORT = '5432'
+DB_NAME = 'airflow'
+
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+# --- 2. Helper Functions ---
+
+@st.cache_resource
+def get_engine():
+    """Create a database connection engine."""
+    return create_engine(DATABASE_URL)
+
+@st.cache_data(ttl=3600) # Cache this longer (1 hour) as cities rarely change
+def get_filter_options():
+    engine = get_engine()
+    query = """
+    SELECT DISTINCT 
+        city_name, 
+        postal_code, 
+        department_num 
+    FROM DIM_BUILDING 
+    ORDER BY city_name, department_num
+    """
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+    return df
+
+@st.cache_data(ttl=600)
+def load_metric_data(metric_column, date_range, gas_label, energy_label, regions, cities, postal_codes):
+    """
+    Generic function to load data for a SINGLE metric.
+    Filters out rows where this specific metric is NULL.
+    """
+    engine = get_engine()
+    start_date, end_date = date_range
+
+    # We use an f-string for the column name (metric_column).
+    # NOTE: Only use f-strings for internal identifiers (table/column names). 
+    # Use %(params)s for values (dates, labels) to prevent SQL Injection.
+    query = f"""
+    SELECT 
+        d.year,
+        d.month,
+        d.day,
+        d.full_date,
+        b.gas_emissions_label,
+        b.energy_consumption_label,
+        AVG(f.{metric_column}) as mean_value,  -- Dynamic Column
+        COUNT(*) as valid_count               -- Count of non-null rows for this metric
+    FROM 
+        FACT_TABLE f
+        INNER JOIN DIM_DATE d ON f.date_id = d.date_id
+        INNER JOIN DIM_BUILDING b ON f.building_id = b.building_id
+    WHERE 
+        d.full_date >= %(start_date)s
+        AND d.full_date <= %(end_date)s
+        AND f.{metric_column} IS NOT NULL     -- Dynamic Filter
+    """
+    
+    params = {
+        'start_date': start_date,
+        'end_date': end_date
+    }
+
+    # Dynamic Filtering for Dimensions
+    if gas_label != "All":
+        query += " AND b.gas_emissions_label = %(gas_label)s"
+        params['gas_label'] = gas_label
+
+    if energy_label != "All":
+        query += " AND b.energy_consumption_label = %(energy_label)s"
+        params['energy_label'] = energy_label
+
+    if regions:
+        query += " AND b.department_num IN %(regions)s"
+        params['regions'] = tuple(regions)
+
+    if cities:
+        query += " AND b.city_name IN %(cities)s"
+        params['cities'] = tuple(cities)
+
+    if postal_codes:
+        query += " AND b.postal_code IN %(postal_codes)s"
+        params['postal_codes'] = tuple(postal_codes)
+
+    # Grouping
+    query += """
+    GROUP BY 
+        d.year, d.month, d.day, d.full_date,
+        b.gas_emissions_label, b.energy_consumption_label
+    ORDER BY 
+        d.year ASC, d.month ASC, d.day ASC
+    """
+    
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn, params=params)
+        
+    return df
+
+# --- 3. Streamlit Layout ---
+
+st.set_page_config(page_title="City Vibes Dashboard", layout="wide")
+st.title("📊 City Vibes Dashboard")
+
+# Sidebar: Filters
+df_options = get_filter_options()
+
+st.sidebar.header("Filters")
+
+all_zips = df_options['postal_code'].dropna().unique().tolist()
+selected_zips = st.sidebar.multiselect("Select Postal Code(s)", options=all_zips)
+
+all_regions = df_options['department_num'].dropna().unique().tolist()
+selected_regions = st.sidebar.multiselect("Select Department(s)", options=all_regions)
+
+all_cities = df_options['city_name'].dropna().unique().tolist()
+selected_cities = st.sidebar.multiselect("Select City(s)", options=all_cities)
+
+d = st.date_input("Select date range", (datetime.date(2023, 1, 1), datetime.date(2024, 1, 1)))
+gas_label = st.sidebar.selectbox("Gas Emission", ["All", "A", "B", "C", "D", "E", "F", "G"])
+energy_label = st.sidebar.selectbox("Energy Consumption", ["All", "A", "B", "C", "D", "E", "F", "G"])
+
+try:
+    # --- 4. Loading Data Separately ---
+    # We load 4 separate DataFrames. This allows 'Land Surface' to have 500 rows 
+    # even if 'Price m2' only has 400 rows.
+    
+    with st.spinner("Loading metrics..."):
+        df_trans = load_metric_data('transaction_value', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
+        df_price = load_metric_data('price_m2', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
+        df_land  = load_metric_data('land_surface', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
+        df_built = load_metric_data('built_surface', d, gas_label, energy_label, selected_regions, selected_cities, selected_zips)
+
+    # Check if primary data exists
+    if df_trans.empty:
+        st.warning("No transaction data found for these filters.")
+    else:
+        # --- 5. KPIs Display ---
+        st.markdown("### Data Availability & Averages")
+        
+        cols = st.columns(4)
+        
+        # Helper to safely calculate stats
+        def display_metric(col, title, df, format_str):
+            if df.empty:
+                col.metric(title, "No Data")
+            else:
+                # Calculate weighted average or simple sum depending on your business logic
+                # (Assuming simple sum of averages based on your previous code, though weighted is better)
+                avg_val = df['mean_value'].mean() 
+                count_val = df['valid_count'].sum()
+                
+                col.metric(f"{title}", f"{avg_val:{format_str}}")
+                col.caption(f"Based on {count_val:,} records")
+
+        # Display Metrics with their specific counts
+        display_metric(cols[0], "Avg Transaction", df_trans, ",.2f")
+        display_metric(cols[1], "Avg Price m²", df_price, ",.2f")
+        display_metric(cols[2], "Avg Land Surf", df_land, ",.2f")
+        display_metric(cols[3], "Avg Built Surf", df_built, ",.2f")
+
+        st.markdown("---")
+
+        # --- 6. Visualizations ---
+        # We use df_trans for the main charts as they focus on Transaction Value
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.subheader("Transaction Value Over Time")
+            chart_data = df_trans.groupby('full_date')['mean_value'].sum()
+            st.line_chart(chart_data)
+
+        with c2:
+            st.subheader("By Gas Label")
+            if gas_label == "All":
+                bar_data = df_trans.groupby('gas_emissions_label')['mean_value'].sum()
+                st.bar_chart(bar_data)
+            else:
+                st.info("Select 'All' to see comparison.")
+
+        with c3:
+            st.subheader("By Energy Label")
+            if energy_label == "All":
+                bar_data = df_trans.groupby('energy_consumption_label')['mean_value'].sum()
+                st.bar_chart(bar_data)
+            else:
+                st.info("Select 'All' to see comparison.")
+
+        # Optional: Tabs to view raw data for each metric
+        st.subheader("Raw Data Inspector")
+        tab1, tab2, tab3, tab4 = st.tabs(["Transactions", "Price m²", "Land", "Built"])
+        tab1.dataframe(df_trans)
+        tab2.dataframe(df_price)
+        tab3.dataframe(df_land)
+        tab4.dataframe(df_built)
+
+except Exception as e:
+    st.error(f"Error: {e}")

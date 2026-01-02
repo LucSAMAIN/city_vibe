@@ -452,6 +452,21 @@ services:
     networks:
       - Practice
 
+  streamlit:
+    build:
+      context: ./streamlit
+    container_name: streamlit_app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./streamlit/app:/app
+    depends_on:
+      postgres-instance:
+        condition: service_healthy
+    restart: always
+    networks:
+      - Practice
+
 networks:
   Practice:
     name: city_vibe_network

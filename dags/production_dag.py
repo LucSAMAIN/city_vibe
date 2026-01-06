@@ -5,6 +5,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.hooks.base import BaseHook
 
 
 import logging
@@ -14,12 +15,14 @@ def _create_dim_date():
     """Create DIM_DATE dimension table from DVF date_mutation"""
     import psycopg2
     
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     cur = conn.cursor()
     
@@ -96,12 +99,14 @@ def _calculate_revenue_metrics_psycopg2():
     # ---------------------------------------------------------
     # Retrieve connection info safely from Airflow
     
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     
     try:

@@ -5,6 +5,8 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.standard.operators.python import BranchPythonOperator
+from airflow.sdk import Variable
+from airflow.hooks.base import BaseHook
 
 import logging
 
@@ -16,7 +18,7 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
-OFFLINE_MODE = True
+OFFLINE_MODE = True if Variable.get("OFFLINE_MODE") == "True" else False
 
 ## Constant definitions
 
@@ -148,11 +150,9 @@ def _extract_revenue_to_mongo():
     import pandas as pd
     import os
 
-    client = MongoClient(
-        "mongodb://mongo:27017/",  
-        username='admin',
-        password='admin'
-    )
+    conn = BaseHook.get_connection("mongo_instance")
+
+    client = MongoClient(conn.get_uri())
 
     for year in range(2019, 2024):
         usecols = (range(0, 9), range(9, 13)) if year > 2021 else (range(1, 10), range(10, 14))
@@ -248,12 +248,10 @@ def _dvf_hash_redis():
         logger.info("OFFLINE_MODE detected. Skipping download. Using local subset.")
         return "dvf_to_mongo"
 
+    conn = BaseHook.get_connection("redis_instance")
+
     # Connect to Redis
-    redis_client = redis.Redis(
-        host="redis-instance",
-        port=6379,
-        db=0
-    )
+    redis_client = redis.Redis(conn.get_uri())
 
     file_path = "/opt/airflow/data/dvf/dvf.csv"
     DATASET_ID = "5cc1b94a634f4165e96436c1"
@@ -311,13 +309,13 @@ def _dvf_to_mongo():
 
     # Define connection details
     client_args = {
-        "host": "mongodb://mongo:27017/",
-        "username": "admin",
-        "password": "admin",
         "serverSelectionTimeoutMS": 60000,
         "connectTimeoutMS": 60000,
         "socketTimeoutMS": 60000
     }
+
+    conn = BaseHook.get_connection("mongo_instance")
+    client_args["host"] = conn.get_uri()
 
     # Clear the collection once before starting the loop
     client = MongoClient(**client_args)
@@ -445,13 +443,11 @@ def _dpe_hash_redis():
 
     if OFFLINE_MODE:
         return "dpe_to_mongo"
+    
+    conn = BaseHook.get_connection("redis_instance")
 
     # Connect to Redis
-    redis_client = redis.Redis(
-        host="redis-instance",
-        port=6379,
-        db=0
-    )
+    redis_client = redis.Redis(conn.get_uri())
     file_path=f"{OUTPUT_DPE_PATH}/{OUTPUT_DPE_FILE}"
     checksum = compute_checksum(file_path)
     key = f"file_status:{file_path}"
@@ -475,12 +471,10 @@ def python_bulk_import(**context):
     import json
     from pymongo import MongoClient
 
+    conn = BaseHook.get_connection("mongo_instance")
+
     # Connexion Mongo
-    client = MongoClient(
-        "mongodb://mongo:27017/",  
-        username='admin',
-        password='admin'
-    )
+    client = MongoClient(conn.get_uri())
     db = client["extracted"]
     collection = db["dpe"]
 

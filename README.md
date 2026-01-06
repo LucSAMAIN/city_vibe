@@ -244,15 +244,20 @@ cd city_vibe
 
 ### Step 2: Configure Environment
 
-Create a `.env` file in the project root (or use the provided template):
+Create a `.env` file in the project root with your user ID:
+
+```bash
+# Get your UID (Linux/macOS)
+echo "AIRFLOW_UID=$(id -u)" > .env
+```
+
+Or manually create `.env`:
 
 ```env
-AIRFLOW_UID=use-your-uid-here
-POSTGRES_USER=defined_user
-POSTGRES_PASSWORD=defined_password
-POSTGRES_DB=defined_db
-AIRFLOW_API_AUTH_JWT_SECRET=your-secret-key
+AIRFLOW_UID=50000
 ```
+
+> **Note**: The other environment variables (PostgreSQL credentials, etc.) have default values in `docker-compose.yml`.
 
 ### Step 3: Build and Start Services
 
@@ -302,8 +307,8 @@ open http://localhost:8501
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| Airflow UI | http://localhost:8080 | defined_user / defined_password |
-| pgAdmin | http://localhost:5050 | defined_user / defined_password |
+| Airflow UI | http://localhost:8080 | airflow / airflow |
+| pgAdmin | http://localhost:5050 | admin@admin.com / admin |
 | Streamlit | http://localhost:8501 | - |
 | RedisInsight | http://localhost:5540 | - |
 
@@ -334,13 +339,38 @@ city_vibe/
 
 ---
 
-## 📈 Sample Data
+## 📈 Offline Mode & Sample Data
 
-The project includes sample data in the `data/` directory for offline testing:
+The project supports **offline testing** using pre-downloaded sample data. This is controlled by the `OFFLINE_MODE` variable in `dags/ingestion_dag.py`.
 
-TO DO: Add small sample datasets for DVF, DPE, and Revenue with ~100-500 records each.
+### Sample Data Location
 
-This allows testing the pipelines without downloading the full datasets (~4GB+).
+| Dataset | Location | Description |
+|---------|----------|-------------|
+| DVF | `data/offline-data/dvf/dvf_subset.csv` | Sample real estate transactions (AURA subset) |
+| DPE | `data/offline-data/dpe/dpe_subset.ndjson` | Sample energy diagnostics |
+| Revenue | `data/offline-data/revenue/revenue_*.xlsx` | Fiscal income files (2019-2023) |
+
+### Enabling Offline Mode
+
+In `dags/ingestion_dag.py`, set:
+
+```python
+OFFLINE_MODE = True  # Use local sample data
+```
+
+When `OFFLINE_MODE = True`:
+- **Ingestion pipelines skip downloads** and use local files from `data/offline-data/`
+- **Redis hash checks are bypassed** - pipelines go directly to MongoDB insertion
+- **Cleanup steps are skipped** to preserve sample files
+
+This allows:
+
+- **Testing without internet** connection
+- **Faster iteration** during development (~5 min vs ~45 min)
+- **Reproducible results** with fixed datasets
+
+> **Note**: For production/full data, set `OFFLINE_MODE = False` to download complete datasets from source APIs.
 
 ---
 
@@ -383,6 +413,15 @@ WHERE energy_consumption_label IS NOT NULL
 GROUP BY energy_consumption_label
 ORDER BY energy_consumption_label;
 ```
+
+---
+
+## 🔮 Future Work
+
+- Add precise geolocalisation (latitude/longitude) to the fact table for map visualizations
+- Implement incremental data loading instead of full refresh
+- Add data quality monitoring and alerting
+- Extend analysis to other French regions beyond AURA
 
 ---
 

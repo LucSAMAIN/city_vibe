@@ -253,20 +253,12 @@ cd city_vibe
 
 ### Step 2: Configure Environment
 
-Create a `.env` file in the project root with your user ID:
+Modify the provided `.env` file by setting the `AIRFLOW_UID` variable to your UID. You can find your UID with the following command:
 
 ```bash
 # Get your UID (Linux/macOS)
-echo "AIRFLOW_UID=$(id -u)" > .env
+id -u
 ```
-
-Or manually create `.env`:
-
-```env
-AIRFLOW_UID=50000
-```
-
-> **Note**: The other environment variables (PostgreSQL credentials, etc.) have default values in `docker-compose.yml`.
 
 ### Step 3: Build and Start Services
 

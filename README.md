@@ -112,15 +112,16 @@ The architecture follows a **three-zone data lakehouse pattern**:
 
 ```mermaid
 erDiagram
-    TRANSACTION_FACT ||--o{ DIM_REVENUE : "revenue_id"
-    TRANSACTION_FACT ||--o{ DIM_DATE : "date_id"
-    TRANSACTION_FACT ||--o{ DIM_BUILDING : "building_id"
+    FACT_TABLE ||--o{ DIM_REVENUE : "revenue_id"
+    FACT_TABLE ||--o{ DIM_DATE : "date_id"
+    FACT_TABLE ||--o{ DIM_BUILDING : "building_id"
     
-    TRANSACTION_FACT {
-        bigint id_transaction PK
+    FACT_TABLE {
+        bigint fact_id PK
         bigint date_id FK
         bigint revenue_id FK
         bigint building_id FK
+        string id_transaction
         float transaction_value
         float land_surface
         float built_surface
@@ -133,8 +134,13 @@ erDiagram
         string join_key
         float reference_tax_revenue_sum
         float tax_household_number
-        float reference_tax_revenue
-        string revenue_class
+        integer household_number
+        float total_net_tax
+        float tax_household_percentage
+        float mean_revenue_per_household
+        float mean_tax_per_household
+        float score
+        string class
     }
     
     DIM_DATE {
@@ -151,6 +157,8 @@ erDiagram
 
     DIM_BUILDING {
         bigint building_id PK
+        string address_key
+        date date_reference
         string insee_code
         string city_name
         string postal_code
@@ -158,8 +166,9 @@ erDiagram
         string street_number
         string street_name
         float gas_emissions
+        float energy_conumption
+        integer nb_logements_agg
         string gas_emissions_label
-        float energy_consumption
         string energy_consumption_label
     }
 ```

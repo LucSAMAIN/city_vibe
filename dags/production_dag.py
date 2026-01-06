@@ -163,6 +163,11 @@ def _calculate_revenue_metrics_psycopg2():
             labels=['E', 'D', 'C', 'B', 'A'],
             right=False
         )
+
+        df['class'] = df['class'].astype(object)
+
+        # Fill NaNs with 'Unknown' immediately
+        df['class'] = df['class'].fillna('Unknown')
         
         # CLEANUP: Handle NaNs before inserting (Postgres hates NaN in float columns)
         # Replace NaN with None so psycopg2 converts it to SQL NULL
@@ -173,7 +178,9 @@ def _calculate_revenue_metrics_psycopg2():
             'mean_tax_per_household', 
             'score', 
             'class'
-        ]].where(pd.notnull(df), None)
+        ]]
+
+        update_df = update_df.replace({np.nan: None})
 
         # 4. BULK WRITE (Staging Strategy)
         # ---------------------------------------------------------
@@ -461,7 +468,7 @@ with DAG(
                 WHEN gas_emissions <= 70 THEN 'E'
                 WHEN gas_emissions <= 100 THEN 'F'
                 WHEN gas_emissions > 100 THEN 'G'
-                ELSE NULL
+                ELSE 'Unknown'
             END,
             energy_consumption_label = CASE 
                 WHEN energy_consumption <= 70 THEN 'A'
@@ -471,7 +478,7 @@ with DAG(
                 WHEN energy_consumption <= 330 THEN 'E'
                 WHEN energy_consumption <= 420 THEN 'F'
                 WHEN energy_consumption > 420 THEN 'G'
-                ELSE NULL
+                ELSE 'Unknown'
             END;
         """,
         dag=dag,

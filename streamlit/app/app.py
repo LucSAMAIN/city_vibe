@@ -5,7 +5,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 from dateutil.relativedelta import relativedelta
 
-# --- 1. Database Configuration ---
+# --- Database Configuration ---
 DB_USER = 'airflow'
 DB_PASS = 'airflow'
 DB_HOST = 'postgres-instance'
@@ -14,7 +14,7 @@ DB_NAME = 'airflow'
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-# --- 2. Helper Functions ---
+# --- Helper Functions ---
 
 @st.cache_resource
 def get_engine():
@@ -45,8 +45,6 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
     engine = get_engine()
 
     # We use an f-string for the column name (metric_column).
-    # NOTE: Only use f-strings for internal identifiers (table/column names). 
-    # Use %(params)s for values (dates, labels) to prevent SQL Injection.
     query = f"""
     SELECT 
         d.year,
@@ -120,10 +118,10 @@ def load_metric_data(metric_column, date_range, gas_label, energy_label, regions
 def analysis(c1, c2, c3, c4, df, gas_label="All", energy_label="All", revenue_class="All"):
 
     def get_weighted_avg(sub_df, group_col):
-        # 1. Group by the specific column (e.g., 'gas_emissions_label')
+        # Group by the specific column (e.g., 'gas_emissions_label')
         grouped = sub_df.groupby(group_col)[['total_value', 'valid_count']].sum()
         
-        # 2. Calculate average: Sum of Values / Sum of Counts
+        # Calculate average: Sum of Values / Sum of Counts
         return grouped['total_value'] / grouped['valid_count']
     
     with c1:
@@ -156,7 +154,7 @@ def analysis(c1, c2, c3, c4, df, gas_label="All", energy_label="All", revenue_cl
             st.info("Select 'All' to see comparison.")
 
 
-# --- 3. Streamlit Layout ---
+# --- Streamlit Layout ---
 
 st.set_page_config(page_title="City Vibes Dashboard", layout="wide")
 st.title("📊 City Vibes Dashboard")
@@ -198,7 +196,7 @@ energy_label = st.sidebar.selectbox("Energy Consumption", ["All", "A", "B", "C",
 revenue_class = st.sidebar.selectbox("Revenue Class", ["All", "A", "B", "C", "D", "E"])
 
 try:
-    # --- 4. Loading Data Separately ---
+    # --- Loading Data Separately ---
     # We load 4 separate DataFrames. This allows 'Land Surface' to have 500 rows 
     # even if 'Price m2' only has 400 rows.
     
@@ -212,7 +210,7 @@ try:
     if df_trans.empty:
         st.warning("No transaction data found for these filters.")
     else:
-        # --- 5. KPIs Display ---
+        # --- KPIs Display ---
         st.markdown("### Data Availability & Averages")
         
         cols = st.columns(4)
@@ -241,8 +239,8 @@ try:
 
         st.markdown("---")
 
-        # --- 6. Visualizations ---
-        # We use df_trans for the main charts as they focus on Transaction Value
+        # --- Visualizations ---
+        
         st.header("Count Analysis")
         c1, c2, c3, c4 = st.columns(4)
         with c1:

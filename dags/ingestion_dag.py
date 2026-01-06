@@ -373,9 +373,6 @@ def _download_dpe():
         logger.info("OFFLINE_MODE: Skipping DPE download. Assuming 'dpe_subset.ndjson' exists.")
         return
 
-    #fiel dpe : numero_dpe, date_etablissement_dpe, etiquette_dpe, etiquette_ges, numero_voie_ban, nom_rue_ban, nom_commune_ban, code_postal_ban, code_insee_ban
-    # ,identifiant_ban
-
     # --- CONFIGURATION ---
     os.makedirs(f"{OUTPUT_DPE_PATH}", exist_ok=True)
 
@@ -481,7 +478,6 @@ def python_bulk_import(**context):
     logger.info("Drop de la collection existante...")
     collection.drop()
     
-    # 4. Lecture et Insertion par Batch (Optimisé pour la RAM et la Vitesse)
     BATCH_SIZE = 100000 
     buffer = []
     total_count = 0
@@ -490,7 +486,7 @@ def python_bulk_import(**context):
     
     with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
-            if not line.strip(): continue # Saute les lignes vides
+            if not line.strip(): continue
             
             # Parsing rapide du JSON
             doc = json.loads(line)

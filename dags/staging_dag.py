@@ -4,6 +4,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.hooks.base import BaseHook
 
 import logging
 
@@ -91,12 +92,14 @@ def clean_column(name):
 def _create_revenue_table():
     import psycopg2
 
+    conn_obj = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn_obj.host,
+        port=conn_obj.port,
+        database=conn_obj.schema,  # Note: Airflow stores the DB name in 'schema'
+        user=conn_obj.login,
+        password=conn_obj.password
     )
     cur = conn.cursor()
 
@@ -114,12 +117,10 @@ def _create_revenue_table():
 
 def _get_revenue_collections():
     from pymongo import MongoClient
+
+    conn = BaseHook.get_connection("mongo_instance")
     
-    client = MongoClient(
-        "mongodb://mongo:27017/",
-        username="admin",
-        password="admin"
-    )
+    client = MongoClient(conn.get_uri())
     # Return a list of collection names
     collections = [
         [c] for c in client.extracted.list_collection_names() 
@@ -157,20 +158,20 @@ def _revenue_mongo_to_postgres(collection):
     # Setup logger (assuming standard logging if not globally defined)
     logger = logging.getLogger(__name__)
 
+    conn_mongo = BaseHook.get_connection("mongo_instance")
+
     # Connect to Mongo
-    client = MongoClient(
-        "mongodb://mongo:27017/",
-        username="admin",
-        password="admin"
-    )
+    client = MongoClient(conn_mongo.get_uri())
+
+    conn_postgres = BaseHook.get_connection("postgres_instance")
 
     # Connect to PostgreSQL
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn_postgres.host,
+        port=conn_postgres.port,
+        database=conn_postgres.schema,  # Note: Airflow stores the DB name in 'schema'
+        user=conn_postgres.login,
+        password=conn_postgres.password
     )
     cur = conn.cursor()
 
@@ -308,21 +309,20 @@ def _dvf_mongo_to_postgres():
     # Note: AURA filtering is now done at ingestion time in _dvf_to_mongo()
     # No need to filter here anymore
 
-    # Connect to MongoDB
-    client = MongoClient(
-        "mongodb://mongo:27017/",
-        username="admin",
-        password="admin",
-        authSource="admin"
-    )
+    conn_mongo = BaseHook.get_connection("mongo_instance")
+
+    # Connect to Mongo
+    client = MongoClient(conn_mongo.get_uri())
+
+    conn_postgres = BaseHook.get_connection("postgres_instance")
 
     # Connect to PostgreSQL
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn_postgres.host,
+        port=conn_postgres.port,
+        database=conn_postgres.schema,  # Note: Airflow stores the DB name in 'schema'
+        user=conn_postgres.login,
+        password=conn_postgres.password
     )
     cur = conn.cursor()
     
@@ -492,12 +492,15 @@ def _dvf_filter_maisons_appartments():
 
     # First connect to Postgres
     import psycopg2
+
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     cur = conn.cursor()
 
@@ -517,12 +520,14 @@ def _dvf_filter_not_null_addresses():
 
     # First connect to Postgres
     import psycopg2
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     cur = conn.cursor()
     # Then execute filtering SQL
@@ -546,21 +551,20 @@ def _dpe_mongo_to_postgres():
     import numpy as np
     import io
 
-    # Connect to MongoDB
-    client = MongoClient(
-        "mongodb://mongo:27017/",
-        username="admin",
-        password="admin",
-        authSource="admin"
-    )
+    conn_mongo = BaseHook.get_connection("mongo_instance")
+
+    # Connect to Mongo
+    client = MongoClient(conn_mongo.get_uri())
+
+    conn_postgres = BaseHook.get_connection("postgres_instance")
 
     # Connect to PostgreSQL
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn_postgres.host,
+        port=conn_postgres.port,
+        database=conn_postgres.schema,  # Note: Airflow stores the DB name in 'schema'
+        user=conn_postgres.login,
+        password=conn_postgres.password
     )
     cur = conn.cursor()
     ordered_cols = list(DPE_TYPE_MAPPING.keys())
@@ -697,12 +701,14 @@ def _dpe_filter_maisons_appartments():
 
     # First connect to Postgres
     import psycopg2
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     cur = conn.cursor()
 
@@ -724,12 +730,14 @@ def _dpe_filter_not_null_addresses():
 
     # First connect to Postgres
     import psycopg2
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     cur = conn.cursor()
 
@@ -773,12 +781,14 @@ def _dpe_normalize_streets():
     }
 
     # Connexion Postgres
+    conn = BaseHook.get_connection("postgres_instance")
+
     conn = psycopg2.connect(
-        host="postgres-instance",
-        port=5432,
-        database="airflow",
-        user="airflow",
-        password="airflow"
+        host=conn.host,
+        port=conn.port,
+        database=conn.schema,
+        user=conn.login,
+        password=conn.password
     )
     cur = conn.cursor()
 

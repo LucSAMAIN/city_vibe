@@ -97,7 +97,7 @@ The architecture follows a **three-zone data lakehouse pattern**:
 - **Operations**:
   - Data type normalization
   - NULL handling and filtering
-  - ~~Regional filtering (AURA departments only)~~
+  - Regional filtering (AURA departments only, some data are directly filtered during ingestion for speed improvements)
   - Address normalization for joining
   - Join key generation
 
@@ -222,10 +222,10 @@ The project implements **6 Apache Airflow DAGs** organized in 3 logical pipeline
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **Orchestration** | Apache Airflow 3.x | DAG scheduling, task management |
+| **Orchestration** | Apache Airflow | DAG scheduling, task management |
 | **Landing Storage** | MongoDB | Raw data document store |
 | **Caching** | Redis | Checksum storage, idempotency |
-| **Staging/Production** | PostgreSQL 16 | Relational data warehouse |
+| **Staging/Production** | PostgreSQL | Relational data warehouse |
 | **Visualization** | Streamlit | Interactive dashboards |
 | **Containerization** | Docker Compose | Environment reproducibility |
 | **Admin Tools** | pgAdmin, RedisInsight | Database management |
@@ -291,7 +291,8 @@ In the Airflow UI:
 2. **Run in order**:
    - First: `ingestion-Dvf`, `ingestion-Dpe`, `ingestion-Revenu`
    - Then: `staging-Dvf`, `staging-Dpe`, `staging-Revenu`
-   - Finally: `production_dag`
+   - Then : `production-Dim-building`, `production-Dim-revenue`, `production-Dim-date`
+   - Finally: `production-Fact-table`
 
 > ⏱️ **Note**: Full pipeline execution takes ~45 minutes depending on hardware. The DPE ingestion is the longest step (~20 min).
 
@@ -309,7 +310,8 @@ open http://localhost:8501
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | Airflow UI | http://localhost:8080 | airflow / airflow |
-| pgAdmin | http://localhost:5050 | admin@admin.com / admin |
+| pgAdmin | http://localhost:5050 | admin@admin.com / root |
+| Mongo Express | http://localhost:8081 | admin / admin |
 | Streamlit | http://localhost:8501 | - |
 | RedisInsight | http://localhost:5540 | - |
 
@@ -330,6 +332,7 @@ city_vibe/
 ├── streamlit/               # Visualization application
 │   └── app/
 │       └── app.py           # Streamlit dashboard
+|   └── Dockerfile           # Custom Python image for streamlit
 ├── images/                  # Documentation images
 ├── config/                  # Airflow configuration
 ├── docker-compose.yml       # Container orchestration
@@ -342,7 +345,7 @@ city_vibe/
 
 ## 📈 Offline Mode & Sample Data
 
-The project supports **offline testing** using pre-downloaded sample data. This is controlled by the `OFFLINE_MODE` variable in `dags/ingestion_dag.py`.
+The project supports **offline testing** using pre-downloaded sample data. This is controlled by the `AIRFLOW_VAR_OFFLINE_MODE` variable in the `.env` file.
 
 ### Sample Data Location
 
@@ -354,10 +357,10 @@ The project supports **offline testing** using pre-downloaded sample data. This 
 
 ### Enabling Offline Mode
 
-In `dags/ingestion_dag.py`, set:
+In `.env`, set:
 
 ```python
-OFFLINE_MODE = True  # Use local sample data
+AIRFLOW_VAR_OFFLINE_MODE = True  # Use local sample data
 ```
 
 When `OFFLINE_MODE = True`:
@@ -371,7 +374,7 @@ This allows:
 - **Faster iteration** during development (~5 min vs ~45 min)
 - **Reproducible results** with fixed datasets
 
-> **Note**: For production/full data, set `OFFLINE_MODE = False` to download complete datasets from source APIs.
+> **Note**: For production/full data, set `AIRFLOW_VAR_OFFLINE_MODE = False` to download complete datasets from source APIs.
 
 ---
 
@@ -381,10 +384,10 @@ This allows:
 
 ```sql
 -- Verify all 12 AURA departments are present
-SELECT DISTINCT code_departement, COUNT(*) as count
-FROM dvf_staging
-GROUP BY code_departement
-ORDER BY code_departement;
+SELECT DISTINCT department_num, COUNT(*) as count
+FROM DIM_BUILDING
+GROUP BY department_num
+ORDER BY department_num;
 ```
 
 ### Revenue Analysis by Commune
@@ -394,8 +397,8 @@ ORDER BY code_departement;
 SELECT city_name, department_num, 
        AVG(reference_tax_revenue) as avg_revenue
 FROM DIM_BUILDING b
-JOIN TRANSACTION_FACT t ON b.building_id = t.building_id
-JOIN DIM_REVENUE r ON t.revenue_id = r.id_revenue
+JOIN FACT_TABLE t ON b.building_id = t.building_id
+JOIN DIM_REVENUE r ON t.revenue_id = r.revenue_id
 GROUP BY city_name, department_num
 ORDER BY avg_revenue DESC
 LIMIT 10;
@@ -408,7 +411,7 @@ LIMIT 10;
 SELECT energy_consumption_label, 
        AVG(price_m2) as avg_price_m2,
        COUNT(*) as transaction_count
-FROM TRANSACTION_FACT t
+FROM FACT_TABLE t
 JOIN DIM_BUILDING b ON t.building_id = b.building_id
 WHERE energy_consumption_label IS NOT NULL
 GROUP BY energy_consumption_label
@@ -423,6 +426,7 @@ ORDER BY energy_consumption_label;
 - Implement incremental data loading instead of full refresh
 - Add data quality monitoring and alerting
 - Extend analysis to other French regions beyond AURA
+- Improve speed and memory usage of costly tasks
 
 ---
 

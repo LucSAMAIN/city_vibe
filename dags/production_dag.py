@@ -95,8 +95,7 @@ def _calculate_revenue_metrics_psycopg2():
     import pandas as pd
     import psycopg2
     import numpy as np
-    # 1. GET CREDENTIALS & CONNECT
-    # ---------------------------------------------------------
+
     # Retrieve connection info safely from Airflow
     
     conn = BaseHook.get_connection("postgres_instance")
@@ -110,8 +109,6 @@ def _calculate_revenue_metrics_psycopg2():
     )
     
     try:
-        # 2. READ DATA
-        # ---------------------------------------------------------
         read_sql = """
             SELECT 
                 revenue_id, 
@@ -125,9 +122,7 @@ def _calculate_revenue_metrics_psycopg2():
         # pandas.read_sql works directly with a psycopg2 connection
         df = pd.read_sql(read_sql, conn)
 
-        # 3. TRANSFORM (Vectorized Pandas Logic)
-        # ---------------------------------------------------------
-        # (Same logic as before, just ensuring types are Python-native for psycopg2)
+
         df['household_number'] = df['household_number'].replace(0, np.nan)
 
         df['tax_household_percentage'] = df['tax_household_number'] / df['household_number']
@@ -182,8 +177,6 @@ def _calculate_revenue_metrics_psycopg2():
 
         update_df = update_df.replace({np.nan: None})
 
-        # 4. BULK WRITE (Staging Strategy)
-        # ---------------------------------------------------------
         with conn.cursor() as cur:
             # A. Create Temp Table
             cur.execute("""
@@ -197,11 +190,11 @@ def _calculate_revenue_metrics_psycopg2():
                 ) ON COMMIT DROP;
             """)
             
-            # B. Prepare data for execute_values
+            # Prepare data for execute_values
             # Convert DataFrame to a list of tuples
             data_tuples = list(update_df.itertuples(index=False, name=None))
             
-            # C. Fast Bulk Insert
+            # Fast Bulk Insert
             insert_query = """
                 INSERT INTO dim_revenue_staging 
                 (revenue_id, tax_household_percentage, mean_revenue_per_household, mean_tax_per_household, score, class) 
@@ -209,7 +202,7 @@ def _calculate_revenue_metrics_psycopg2():
             """
             psycopg2.extras.execute_values(cur, insert_query, data_tuples)
             
-            # D. The Bulk Update Join
+            # The Bulk Update Join
             update_query = """
                 UPDATE DIM_REVENUE as main
                 SET 
@@ -735,13 +728,13 @@ with DAG(
             )
             SELECT
                 id_mutation,
-                -- 1. DATE_ID : Si la date est nulle -> '-1'
+                -- DATE_ID : Si la date est nulle -> '-1'
                 COALESCE(date_id, '-1'),
 
-                -- 2. REVENUE_ID : Si la clé de jointure est nulle -> '-1'
+                -- REVENUE_ID : Si la clé de jointure est nulle -> '-1'
                 COALESCE(revenue_id, '-1'),
                 
-                -- 3. BUILDING_ID : Si le mapping DPE n'a pas marché -> '-1'
+                -- BUILDING_ID : Si le mapping DPE n'a pas marché -> '-1'
                 COALESCE(building_id, '-1'),
                 
                 -- METRIQUES
@@ -763,7 +756,7 @@ with DAG(
             -- On peut filtrer ici si tu veux exclure les transactions sans valeur
             WHERE id_mutation IS NOT NULL;
 
-            -- 4. Index sur les Clés Étrangères (Indispensable pour la performance des Dashboards)
+            -- Index sur les Clés Étrangères (Indispensable pour la performance des Dashboards)
             CREATE INDEX IF NOT EXISTS idx_fact_date ON FACT_TABLE(date_id);
             CREATE INDEX IF NOT EXISTS idx_fact_rev ON FACT_TABLE(revenue_id);
             CREATE INDEX IF NOT EXISTS idx_fact_build ON FACT_TABLE(building_id);

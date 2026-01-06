@@ -189,7 +189,7 @@ def _revenue_mongo_to_postgres(collection):
         logger.warning(f"Skipping collection with invalid date format: {collection}")
         return
     
-    # 2. Idempotency: Clear ONLY this date's data
+    # Idempotency: Clear ONLY this date's data
     cur.execute("DELETE FROM REVENUE_STAGING WHERE date = %s", (coll_date,))
     conn.commit()
 
@@ -204,19 +204,18 @@ def _revenue_mongo_to_postgres(collection):
         columns = [clean_column(col) for col in batch_df.columns]
         batch_df.columns = columns
 
-        # 1. Filter columns and CREATE A COPY to avoid SettingWithCopyWarning
+        # Filter columns and CREATE A COPY to avoid SettingWithCopyWarning
         available_cols = [col for col in REVENUE_TYPE_MAPPING.keys() if col in batch_df.columns]
         
         # This .copy() is crucial to fix the warning
         df_batch = batch_df[available_cols].copy()
 
-        # 2. Add missing columns as None
+        # Add missing columns as None
         for col in REVENUE_TYPE_MAPPING.keys():
             if col not in df_batch.columns:
                 df_batch[col] = None
 
-        # 3. Numeric Conversions
-        # Use 'Int64' (capital I) for nullable integers
+        # Numeric Conversions
         df_batch["nombre_de_foyers_fiscaux"] = pd.to_numeric(
             df_batch["nombre_de_foyers_fiscaux"], errors='coerce'
         ).astype('Int64')
@@ -239,7 +238,7 @@ def _revenue_mongo_to_postgres(collection):
             if fc in df_batch.columns:
                 df_batch[fc] = pd.to_numeric(df_batch[fc], errors='coerce').astype(float)
 
-        # 4. String Cleaning (Vectorized replacement instead of row-by-row loop)
+        # String Cleaning (Vectorized replacement instead of row-by-row loop)
         str_cols = ['dep', 'libelle_de_la_commune', 'revenu_fiscal_de_reference_par_tranche_en_euros']
         
         for col in str_cols:
@@ -260,7 +259,7 @@ def _revenue_mongo_to_postgres(collection):
                 df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'] = \
                     df_batch['revenu_fiscal_de_reference_par_tranche_en_euros'].str.upper().str.strip()
 
-        # 5. Add Date and Filter Rows
+        # Add Date and Filter Rows
         df_batch['date'] = coll_date
         
         # Filter rows (Handle case where column might be NaN after cleaning)
@@ -270,11 +269,11 @@ def _revenue_mongo_to_postgres(collection):
         if df_batch.empty:
             return
 
-        # 6. Final Selection & Ordering
+        # Final Selection & Ordering
         # Ensure order matches col_list_sql
         final_df = df_batch[db_cols]
 
-        # 7. Write to Buffer
+        # Write to Buffer
         csv_buffer = io.StringIO()
         final_df.to_csv(csv_buffer, index=False, header=False, na_rep='')
         csv_buffer.seek(0)
@@ -307,7 +306,6 @@ def _dvf_mongo_to_postgres():
     import io
 
     # Note: AURA filtering is now done at ingestion time in _dvf_to_mongo()
-    # No need to filter here anymore
 
     conn_mongo = BaseHook.get_connection("mongo_instance")
 
@@ -568,22 +566,18 @@ def _dpe_mongo_to_postgres():
     )
     cur = conn.cursor()
     ordered_cols = list(DPE_TYPE_MAPPING.keys())
-    # --- CRÉATION DE LA TABLE ---
+
     cur.execute('DROP TABLE IF EXISTS DPE_STAGING;')
     logger.info("Deleting table DPE_STAGING")
 
-    # Création dynamique basée sur le mapping
     create_cols_sql = ", ".join([f'"{col}" {dtype}' for col, dtype in DPE_TYPE_MAPPING.items()])
     cur.execute(f'CREATE TABLE IF NOT EXISTS DPE_STAGING ({create_cols_sql});')
     conn.commit()
     
     logger.info(f"Created table DPE_STAGING with columns: {ordered_cols}")
 
-    # Préparation de la liste des colonnes pour le SQL COPY
     col_list_sql = ", ".join([f'"{c}"' for c in ordered_cols])
 
-
-    # --- FONCTION DE TRAITEMENT ---
     def copy_rows(batch_df: pd.DataFrame):
         csv_buffer = io.StringIO()
 
@@ -616,15 +610,14 @@ def _dpe_mongo_to_postgres():
                 # Si ce n'est pas un nombre, on renvoie la chaine brute (ou None)
                 return safe_str(val)
 
-        # --- BOUCLE DE NETTOYAGE PRINCIPALE ---
         for col_name, col_type in DPE_TYPE_MAPPING.items():
             
-            # 1. Si la colonne n'existe pas dans le batch, on la crée vide
+            # Si la colonne n'existe pas dans le batch, on la crée vide
             if col_name not in batch_df.columns:
                 batch_df[col_name] = None
-                continue # On passe, pas besoin de convertir du None
+                continue 
 
-            # 2. Application du typage
+            # Application du typage
             if col_type == "DATE":
                 batch_df[col_name] = pd.to_datetime(batch_df[col_name], errors='coerce')
 
@@ -668,7 +661,6 @@ def _dpe_mongo_to_postgres():
             logger.error(f"Error during COPY: {e}")
             raise e
 
-    # --- EXECUTION DU FLUX ---
     batch_size = 50000
     cursor = client.extracted["dpe"].find(batch_size=batch_size)
     processed = 0
@@ -831,9 +823,7 @@ def _dpe_normalize_streets():
             # Note: le WHERE LIKE optimise pour ne toucher que les lignes concernées
             
             cur.execute(sql_query)
-        
-        # ÉTAPE 3 : Nettoyage des articles courants (Optionnel mais recommandé pour les jointures)
-        # Ex: "RTE DE LA GLIAT" -> "RTE GLIAT" ? 
+            
         # cur.execute("UPDATE DPE_STAGING SET nom_rue_ban = REGEXP_REPLACE(nom_rue_ban, '\\y(DE|LA|DU|DES|LE|LES)\\y', '', 'g');")
         # cur.execute("UPDATE DPE_STAGING SET nom_rue_ban = TRIM(REGEXP_REPLACE(nom_rue_ban, '\s+', ' ', 'g'));") # Nettoie les doubles espaces créés
 
